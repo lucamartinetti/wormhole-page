@@ -4,6 +4,24 @@ HTTP gateway for [Magic Wormhole](https://magic-wormhole.readthedocs.io/). Send 
 
 ## Usage
 
+### Send a file
+
+```bash
+curl -T myfile.tar.gz -H "X-Wormhole-Filename: myfile.tar.gz" http://localhost:8080/send
+```
+
+Output:
+```
+wormhole receive 7-guitarist-revenge
+waiting for receiver...
+transferring...
+transfer complete
+```
+
+Share the first line with the receiver. They run `wormhole receive 7-guitarist-revenge` on their machine.
+
+The upload streams directly to the receiver with constant memory usage — no file size limit.
+
 ### Receive a file
 
 Someone sends you a file with `wormhole send`. You receive it with curl:
@@ -12,20 +30,13 @@ Someone sends you a file with `wormhole send`. You receive it with curl:
 curl -OJ http://localhost:8080/receive/7-guitarist-revenge
 ```
 
-### Send a file
+### Two-step send (programmatic)
 
-You send a file via the server. Someone receives it with `wormhole receive`:
+For scripts and programmatic use, you can separate code allocation from upload:
 
 ```bash
-# Get a wormhole code
 CODE=$(curl -s -X POST http://localhost:8080/send/new)
-
-# Upload the file
-curl -T myfile.tar.gz \
-  -H "X-Wormhole-Filename: myfile.tar.gz" \
-  http://localhost:8080/send/$CODE
-
-# Tell the receiver: wormhole receive $CODE
+curl -T myfile.tar.gz -H "X-Wormhole-Filename: myfile.tar.gz" http://localhost:8080/send/$CODE
 ```
 
 ## Install
@@ -33,12 +44,9 @@ curl -T myfile.tar.gz \
 Requires Python 3.12+.
 
 ```bash
-# Clone and install
-git clone https://github.com/luca/wormhole-web.git
+git clone https://github.com/lucamartinetti/wormhole-web.git
 cd wormhole-web
 uv sync
-
-# Run
 uv run wormhole-web --port 8080
 ```
 
@@ -53,15 +61,17 @@ podman run -p 8080:8080 wormhole-web
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/receive/<code>` | Receive a file. Streams the file with `Content-Disposition` and `Content-Length`. |
-| `POST` | `/send/new` | Create a wormhole session. Returns the wormhole code as plain text. |
-| `PUT` | `/send/<code>` | Upload a file for sending. Set `X-Wormhole-Filename` header for the filename. |
-| `PUT` | `/send` | Convenience redirect — allocates a code and redirects to `/send/<code>`. Best-effort. |
+| `PUT` | `/send` | Send a file (inline). Streams upload directly to wormhole transit. Returns the code on the first line of the response. |
+| `POST` | `/send/new` | Allocate a wormhole code. Returns the code as plain text. |
+| `PUT` | `/send/<code>` | Upload a file for an existing session (from `/send/new`). |
+| `GET` | `/receive/<code>` | Receive a file. Streams with `Content-Disposition` and `Content-Length`. |
 | `GET` | `/health` | Health check. Returns `ok`. |
 
 ## How it works
 
 The server acts as a wormhole client on behalf of the HTTP user. It completes the SPAKE2 key exchange, decrypts/encrypts data, and streams it between the HTTP connection and the wormhole transit connection. The server sees plaintext — if you need end-to-end encryption, use the wormhole CLI directly.
+
+Uploads are true-streaming: body data flows directly from the HTTP request to the wormhole transit connection via a bounded in-memory queue with backpressure. Memory usage is constant (~4MB) regardless of file size. There is no file size limit.
 
 Uses the public Magic Wormhole relay (`relay.magic-wormhole.io`) for signaling and transit. No bundled relay server needed.
 
