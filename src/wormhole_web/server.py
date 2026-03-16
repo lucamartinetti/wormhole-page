@@ -21,7 +21,7 @@ from wormhole_web.receiver import (
     receive_file,
 )
 from wormhole_web.util import WormholeTimeout
-from wormhole_web.sender import SendError, create_send_session, prepare_send
+from wormhole_web.sender import SendError, create_send_session, start_key_exchange, complete_send
 from wormhole_web.session import SessionManager, SessionState
 from wormhole_web.util import sanitize_filename
 
@@ -227,7 +227,12 @@ class SendResource(resource.Resource):
                 return
 
             code, wormhole = yield create_send_session(self._reactor)
-            self._session_manager.create(code, wormhole)
+            session = self._session_manager.create(code, wormhole)
+
+            # Start PAKE in background — store Deferred for Phase 2
+            d = start_key_exchange(wormhole, self._reactor)
+            d.addErrback(lambda f: f)  # pass-through: suppress unhandled warning, preserve Failure
+            session.key_exchange_d = d
 
             request.setResponseCode(307)
             request.setHeader(b"location", f"/send/{code}".encode())
@@ -265,7 +270,12 @@ class SendNewResource(resource.Resource):
                 return
 
             code, wormhole = yield create_send_session(self._reactor)
-            self._session_manager.create(code, wormhole)
+            session = self._session_manager.create(code, wormhole)
+
+            # Start PAKE in background — store Deferred for Phase 2
+            d = start_key_exchange(wormhole, self._reactor)
+            d.addErrback(lambda f: f)  # pass-through: suppress unhandled warning, preserve Failure
+            session.key_exchange_d = d
 
             request.setHeader(b"content-type", b"text/plain")
             request.write(code.encode() + b"\n")
@@ -336,8 +346,9 @@ class SendCodeResource(resource.Resource):
         request.write(b"waiting for receiver...\n")
 
         try:
-            connection = yield prepare_send(
-                session.wormhole, filename, filesize, self._reactor,
+            connection = yield complete_send(
+                session.wormhole, session.key_exchange_d,
+                filename, filesize, self._reactor,
                 timeout=self._transfer_timeout,
             )
             session.state = SessionState.TRANSFERRING
