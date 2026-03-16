@@ -172,6 +172,42 @@ podman run -p 8080:8080 wormhole-web
 uv run python -m wormhole_web.server --port 8080
 ```
 
+## Testing
+
+Uses `pytest` as the test runner.
+
+### Unit tests
+
+Test internal logic that doesn't require a running relay or server:
+- Filename sanitization (path traversal, null bytes, special characters)
+- Session lifecycle (TTL expiry, duplicate upload rejection, cleanup)
+- Buffer/backpressure logic
+
+### Integration tests
+
+Start our server, use the `magic-wormhole` Python library as the other end:
+- Send file via library → receive via HTTP (curl-style request)
+- Send file via HTTP → receive via library
+- Verify streaming (large file, check memory stays bounded)
+- Error cases: invalid code, timeout, duplicate upload, session limit
+
+### E2E compatibility tests
+
+Run real CLI binaries against our server via subprocess. These are the most important tests — they prove interoperability.
+
+**Matrix (4 combinations):**
+
+| Sender | Receiver | Description |
+|--------|----------|-------------|
+| `wormhole send` (Python) | `curl` via our server | CLI sender, web receiver |
+| `curl` via our server | `wormhole receive` (Python) | Web sender, CLI receiver |
+| `wormhole-rs send` (Rust) | `curl` via our server | Rust CLI sender, web receiver |
+| `curl` via our server | `wormhole-rs receive` (Rust) | Web sender, Rust CLI receiver |
+
+Each test: launch the CLI as a subprocess, start our server, run the transfer, verify the received file matches the original (checksum).
+
+**CI:** All tests (unit, integration, E2E) run in CI against the public relay. E2E tests require `magic-wormhole` and `magic-wormhole-rs` CLI binaries installed in the CI environment. Tests may be flaky due to relay availability — acceptable for now, can move to a local mailbox server later if needed.
+
 ## Known Risks
 
 - **Relay abuse:** `POST /send/new` creates a real wormhole session on the public mailbox relay. Without rate limiting, a trivial loop could exhaust relay resources. Rate limiting is out of scope for v1 but should be added before any public deployment.
