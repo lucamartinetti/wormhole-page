@@ -9,7 +9,7 @@ Magic Wormhole is a great protocol for secure file transfer, but it requires the
 ## Core Decisions
 
 - **Server-side wormhole client:** The server completes the SPAKE2 exchange and handles encryption/decryption on behalf of the HTTP user. The server sees plaintext. Users who need E2E encryption should use the CLI directly.
-- **Public relay:** Connects to the default Magic Wormhole relay (`relay.magic-wormhole.io`). No bundled relay server.
+- **Public relay:** Uses the default Magic Wormhole mailbox server (`relay.magic-wormhole.io`) for signaling/PAKE, and the default transit relay for data transfer when direct connections fail. No bundled servers. Note: in containerized deployments, direct transit connections are unlikely — most transfers will go through the transit relay.
 - **No browser UI:** Pure HTTP API, curl-friendly. A frontend may be added later.
 - **Twisted-native:** Uses `twisted.web` directly with the `magic-wormhole` Python library. No async bridging, no extra framework.
 - **File transfer protocol reimplemented:** The `magic-wormhole` library exposes a low-level message pipe (`wormhole.create()`), not a file-transfer API. The file transfer logic (offer/accept JSON exchange, transit negotiation, encrypted record framing) lives in the CLI internals and is not a public API. This project reimplements the file-transfer protocol on top of `wormhole.create()` and `wormhole.transit`, following the [file-transfer protocol spec](https://magic-wormhole.readthedocs.io/en/latest/file-transfer-protocol.html).
@@ -56,11 +56,13 @@ Uploads file data for an existing wormhole session. Streams the request body int
 
 **Headers:**
 - `Content-Type` — preserved for the receiver
-- `X-Wormhole-Filename: <name>` — original filename. If omitted, the server falls back to the last path segment of the URL, then to `upload`.
+- `X-Wormhole-Filename: <name>` — original filename. If omitted, the server falls back to the last path segment of the URL, then to `upload`. The server sanitizes filenames: strips path components (`../`, `/`), removes null bytes, and rejects or replaces characters that are unsafe in `Content-Disposition` headers.
 
 **Response (streaming, text/plain):**
+- HTTP `200` on success. `404` if the code is unknown, `409` if an upload is already active, `503` if the server has reached its concurrent session limit.
 - Line 1: the wormhole code (repeated for convenience)
 - Subsequent lines: status updates (`waiting for receiver...`, `transfer complete`)
+- If the wormhole exchange fails after streaming has started, the server closes the connection. The client sees a truncated response.
 
 **Example:**
 ```bash
@@ -98,20 +100,23 @@ All transfers are streaming. The server never buffers a full file in memory.
 1. HTTP request arrives at `/receive/<code>`
 2. Server initiates wormhole exchange with the provided code
 3. SPAKE2 key exchange completes with the sender
-4. Server receives the file offer (includes filename and size), sets response headers
-5. As data arrives over the wormhole transit connection, chunks are written directly to the HTTP response via `Request.write(chunk)`
-6. Backpressure: the wormhole transit data source is registered as a Twisted `IPushProducer` on the HTTP transport. If the HTTP client reads slowly, Twisted's write buffer triggers `pauseProducing`, which pauses reading from the transit connection.
-7. When transfer completes, `Request.finish()` closes the response
+4. Server receives the file offer (includes filename and size)
+5. Server sends `{"answer": {"file_ack": "ok"}}` to accept the offer (required by the file-transfer protocol for interop with the CLI)
+6. Server sets response headers (`Content-Disposition`, `Content-Length`, `Content-Type`)
+7. As data arrives over the wormhole transit connection, chunks are written directly to the HTTP response via `Request.write(chunk)`. The server tracks bytes received and truncates at the offered file size to guard against malicious senders.
+8. Backpressure: the wormhole transit data source is registered as a Twisted `IPushProducer` on the HTTP transport. If the HTTP client reads slowly, Twisted's write buffer triggers `pauseProducing`, which pauses reading from the transit connection.
+9. When transfer completes (or offered byte count is reached), `Request.finish()` closes the response. If fewer bytes arrive than offered, the connection closes abruptly (client sees content shorter than `Content-Length`).
 
 ### Send path
 
 1. Wormhole is created via `POST /send/new` (or `PUT /send` redirect)
 2. Code is returned to the client
 3. File upload begins on `PUT /send/<code>`
-4. Upload chunks are read from the HTTP request body and held in a bounded in-memory buffer (e.g., 256KB)
-5. When a receiver connects and PAKE completes, data flows from the buffer through the wormhole transit
-6. Backpressure: if the buffer is full, the server pauses reading from the HTTP request (Twisted's `pauseProducing` / `resumeProducing`)
-7. Response completes when the wormhole transfer finishes
+4. Server sends the file offer message (filename, size) to the wormhole
+5. Upload chunks are read from the HTTP request body and held in a bounded in-memory buffer (e.g., 256KB)
+6. Backpressure: if the buffer is full, the server pauses reading from the HTTP request (Twisted's `pauseProducing` / `resumeProducing`). This means if no receiver has connected yet, the upload is paused once the buffer fills — the HTTP connection stays open but idle, not consuming memory. The sender's curl effectively blocks.
+7. When a receiver connects, PAKE completes, and the receiver sends `file_ack`, data flows from the buffer through the wormhole transit
+8. Response completes when the wormhole transfer finishes
 
 ### Memory budget
 
@@ -119,6 +124,7 @@ One buffer per active transfer (~256KB). Actual per-connection overhead is highe
 
 ## Session Lifecycle and Cleanup
 
+- **Concurrent session limit:** The server enforces a configurable maximum number of concurrent sessions (default: 128). When the limit is reached, `POST /send/new` returns `503 Service Unavailable`.
 - **Session TTL:** Wormhole sessions created via `POST /send/new` that receive no upload within 60 seconds are cleaned up (wormhole closed, resources freed).
 - **Transfer timeout:** Active transfers that stall (no data for 120 seconds) are aborted.
 - **Disconnection:** If the HTTP client disconnects mid-transfer, the wormhole connection is closed immediately. Twisted's `Request.notifyFinish()` is used to detect client disconnection.
