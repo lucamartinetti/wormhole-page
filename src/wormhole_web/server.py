@@ -1,11 +1,9 @@
 """Twisted Web HTTP server for wormhole-web."""
 
 import mimetypes
-from collections import deque
 
 from twisted.internet import defer, endpoints
 from twisted.internet import reactor as default_reactor
-from twisted.python import log
 from twisted.web import resource, server
 
 from wormhole_web.constants import (
@@ -16,14 +14,13 @@ from wormhole_web.constants import (
 )
 from wormhole_web.receiver import (
     BadCodeError,
-    OfferError,
     ReceiveError,
     receive_file,
 )
-from wormhole_web.util import WormholeTimeout
-from wormhole_web.sender import SendError, create_send_session, start_key_exchange, complete_send
-from wormhole_web.session import SessionManager, SessionState
-from wormhole_web.util import sanitize_filename
+from wormhole_web.util import WormholeTimeout, sanitize_filename
+from wormhole_web.sender import create_send_session, start_key_exchange
+from wormhole_web.session import SessionManager
+from wormhole_web.streaming import StreamingRequest
 
 
 class HealthResource(resource.Resource):
@@ -61,7 +58,9 @@ def make_site(reactor=None, max_sessions=128, session_ttl=60, transfer_timeout=1
         reactor=reactor,
     )
     root = RootResource(session_manager, reactor, transfer_timeout)
-    return server.Site(root)
+    site = server.Site(root)
+    site.requestFactory = StreamingRequest
+    return site
 
 
 # --- Receive resources ---
@@ -196,7 +195,8 @@ class ReceiveCodeResource(resource.Resource):
 
 
 class SendResource(resource.Resource):
-    """Routes /send/new and /send/<code>."""
+    """Container for /send/new. PUT /send and PUT /send/<code> are handled
+    by StreamingRequest before the body is buffered."""
 
     def __init__(self, session_manager, reactor, transfer_timeout=120):
         super().__init__()
@@ -204,46 +204,6 @@ class SendResource(resource.Resource):
         self._reactor = reactor
         self._transfer_timeout = transfer_timeout
         self.putChild(b"new", SendNewResource(session_manager, reactor))
-
-    def getChild(self, name, request):
-        return SendCodeResource(
-            name.decode("utf-8"), self._session_manager, self._reactor,
-            self._transfer_timeout,
-        )
-
-    def render_PUT(self, request):
-        """PUT /send — convenience redirect."""
-        self._do_redirect(request)
-        return server.NOT_DONE_YET
-
-    @defer.inlineCallbacks
-    def _do_redirect(self, request):
-        try:
-            if self._session_manager.is_full():
-                request.setResponseCode(503)
-                request.setHeader(b"content-type", b"text/plain")
-                request.write(b"too many active sessions\n")
-                request.finish()
-                return
-
-            code, wormhole = yield create_send_session(self._reactor)
-            session = self._session_manager.create(code, wormhole)
-
-            # Start PAKE in background — store Deferred for Phase 2
-            d = start_key_exchange(wormhole, self._reactor)
-            d.addErrback(lambda f: f)  # pass-through: suppress unhandled warning, preserve Failure
-            session.key_exchange_d = d
-
-            request.setResponseCode(307)
-            request.setHeader(b"location", f"/send/{code}".encode())
-            request.setHeader(b"content-type", b"text/plain")
-            request.write(code.encode() + b"\n")
-            request.finish()
-        except Exception as e:
-            request.setResponseCode(500)
-            request.setHeader(b"content-type", b"text/plain")
-            request.write(f"error: {e}\n".encode())
-            request.finish()
 
 
 class SendNewResource(resource.Resource):
@@ -274,7 +234,7 @@ class SendNewResource(resource.Resource):
 
             # Start PAKE in background — store Deferred for Phase 2
             d = start_key_exchange(wormhole, self._reactor)
-            d.addErrback(lambda f: f)  # pass-through: suppress unhandled warning, preserve Failure
+            d.addErrback(lambda f: f)
             session.key_exchange_d = d
 
             request.setHeader(b"content-type", b"text/plain")
@@ -284,106 +244,6 @@ class SendNewResource(resource.Resource):
             request.setResponseCode(500)
             request.setHeader(b"content-type", b"text/plain")
             request.write(f"error: {e}\n".encode())
-            request.finish()
-
-
-class SendCodeResource(resource.Resource):
-    """PUT /send/<code> — upload file data.
-
-    IMPORTANT: Twisted buffers the full request body before calling render_PUT.
-    For streaming large uploads, we need a custom approach. For v1, we accept
-    this limitation — Twisted writes the body to a temp file for large uploads
-    (>100KB), so memory usage stays bounded even for large files. The file is
-    read back in chunks during the wormhole transit phase.
-
-    True streaming (backpressure from HTTP request body to wormhole transit)
-    would require implementing IBodyReceiver or a custom Request subclass.
-    This is deferred to a future version.
-    """
-    isLeaf = True
-
-    def __init__(self, code, session_manager, reactor, transfer_timeout=120):
-        super().__init__()
-        self._code = code
-        self._session_manager = session_manager
-        self._reactor = reactor
-        self._transfer_timeout = transfer_timeout
-
-    def render_PUT(self, request):
-        self._do_upload(request)
-        return server.NOT_DONE_YET
-
-    @defer.inlineCallbacks
-    def _do_upload(self, request):
-        session = self._session_manager.get(self._code)
-        if session is None:
-            request.setResponseCode(404)
-            request.setHeader(b"content-type", b"text/plain")
-            request.write(b"unknown or expired code\n")
-            request.finish()
-            return
-
-        if not session.claim_upload():
-            request.setResponseCode(409)
-            request.setHeader(b"content-type", b"text/plain")
-            request.write(b"upload already in progress\n")
-            request.finish()
-            return
-
-        # Get filename from header or fallback
-        raw_filename = request.getHeader("x-wormhole-filename")
-        if raw_filename:
-            filename = sanitize_filename(raw_filename)
-        else:
-            filename = "upload"
-
-        # Get file size from Content-Length
-        content_length = request.getHeader("content-length")
-        filesize = int(content_length) if content_length else 0
-
-        request.setHeader(b"content-type", b"text/plain")
-        request.write(self._code.encode() + b"\n")
-        request.write(b"waiting for receiver...\n")
-
-        try:
-            connection = yield complete_send(
-                session.wormhole, session.key_exchange_d,
-                filename, filesize, self._reactor,
-                timeout=self._transfer_timeout,
-            )
-            session.state = SessionState.TRANSFERRING
-
-            # Read from request body (Twisted has buffered it to disk/memory)
-            # and send in chunks through wormhole transit
-            request.content.seek(0)
-            while True:
-                chunk = request.content.read(262144)  # 256KB
-                if not chunk:
-                    break
-                connection.send_record(chunk)
-
-            # Wait for the receiver's ack record (sent back via transit after
-            # all data has been received).  Both wormhole-py and wormhole-rs
-            # send {"ack": "ok", "sha256": "<hex>"} before closing the
-            # connection.  We must drain it; otherwise the receiver gets a
-            # broken-pipe when it writes the ack to a closed connection.
-            try:
-                yield connection.receive_record()
-            except Exception:
-                pass  # ack is best-effort
-
-            connection.close()
-            request.write(b"transfer complete\n")
-        except SendError as e:
-            request.write(f"error: {e}\n".encode())
-        except Exception as e:
-            request.write(f"error: {e}\n".encode())
-        finally:
-            self._session_manager.remove(self._code)
-            try:
-                yield session.wormhole.close()
-            except Exception:
-                pass
             request.finish()
 
 
