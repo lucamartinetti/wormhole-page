@@ -27,46 +27,55 @@ def create_send_session(reactor):
 
 
 @defer.inlineCallbacks
-def prepare_send(wormhole, filename: str, filesize: int, reactor, timeout=120):
-    """Exchange protocol messages and establish transit for sending.
+def start_key_exchange(wormhole, reactor):
+    """Start PAKE key exchange in the background.
 
-    Must be called after the wormhole code has been allocated.
-    Blocks until a receiver connects and accepts the file offer.
+    Returns a Deferred that fires when key exchange completes.
+    Does NOT apply a timeout — the caller stores the Deferred and
+    Phase 2 (complete_send) applies the timeout.
+    """
+    yield wormhole.get_unverified_key()
+    yield wormhole.get_verifier()
+
+
+@defer.inlineCallbacks
+def complete_send(wormhole, key_exchange_d, filename, filesize, reactor, timeout=120):
+    """Complete the send protocol after key exchange.
+
+    Awaits the key exchange Deferred (may already be resolved),
+    then sends transit hints + file offer, waits for receiver's
+    response, and establishes transit.
 
     Args:
-        wormhole: The wormhole object (from create_send_session).
+        wormhole: The wormhole object.
+        key_exchange_d: Deferred from start_key_exchange (may be resolved).
         filename: Name of the file being sent.
         filesize: Size in bytes.
         reactor: The Twisted reactor.
-        timeout: Seconds to wait for receiver before giving up.
+        timeout: Seconds to wait before giving up.
 
     Returns:
         Connection: the transit connection, ready for send_record().
-
-    Raises:
-        SendError: If the receiver rejects or something fails.
-        WormholeTimeout: If the receiver never connects.
     """
     w = wormhole
     try:
-        # Step 1: Complete key exchange FIRST (with timeout)
+        # Wait for PAKE to complete (with timeout starting now)
         yield with_timeout(
-            w.get_unverified_key(), timeout, reactor,
+            key_exchange_d, timeout, reactor,
             "Timed out waiting for receiver"
         )
-        yield w.get_verifier()
 
-        # Step 2: Set up transit sender
+        # Set up transit sender (derive_key requires PAKE to be done)
         ts = TransitSender(
             TRANSIT_RELAY,
-            no_listen=True,  # server doesn't accept inbound connections
+            no_listen=True,
             reactor=reactor,
         )
 
         transit_key = w.derive_key(APPID + "/transit-key", TRANSIT_KEY_LENGTH)
         ts.set_transit_key(transit_key)
 
-        # Step 3: Send our transit hints
+        # Send our transit hints
         our_abilities = ts.get_connection_abilities()
         our_hints = yield ts.get_connection_hints()
         w.send_message(dict_to_bytes({
@@ -76,7 +85,7 @@ def prepare_send(wormhole, filename: str, filesize: int, reactor, timeout=120):
             }
         }))
 
-        # Step 4: Send file offer
+        # Send file offer
         w.send_message(dict_to_bytes({
             "offer": {
                 "file": {
@@ -86,10 +95,7 @@ def prepare_send(wormhole, filename: str, filesize: int, reactor, timeout=120):
             }
         }))
 
-        # Step 5: Read two messages from receiver: transit hints and file_ack
-        # (either order — the receiver may send them differently).
-        # We fire the transit connection as soon as we have the receiver's
-        # hints so that both sides hit the relay at the same time.
+        # Read two messages from receiver (either order)
         connect_d = None
         answer_msg = None
 
@@ -102,7 +108,6 @@ def prepare_send(wormhole, filename: str, filesize: int, reactor, timeout=120):
 
             if "transit" in msg:
                 ts.add_connection_hints(msg["transit"].get("hints-v1", []))
-                # Start transit connection immediately after we have hints
                 if connect_d is None:
                     connect_d = ts.connect()
             elif "answer" in msg:
@@ -116,8 +121,7 @@ def prepare_send(wormhole, filename: str, filesize: int, reactor, timeout=120):
         if "file_ack" not in answer_msg.get("answer", {}):
             raise SendError(f"Unexpected answer: {answer_msg}")
 
-        # Step 6: Establish transit connection (with timeout).
-        # connect_d may already be in-flight (started when hints arrived).
+        # Establish transit connection
         if connect_d is None:
             connect_d = ts.connect()
         connection = yield with_timeout(
