@@ -19,6 +19,7 @@ class Session:
         self.state = SessionState.WAITING_FOR_UPLOAD
         self.transit = None
         self._cleanup_timer = None
+        self.key_exchange_d = None
 
     def claim_upload(self) -> bool:
         """Try to claim this session for upload. Returns False if already claimed."""
@@ -62,5 +63,8 @@ class SessionManager:
     def _expire(self, code: str):
         session = self._sessions.get(code)
         if session and session.state == SessionState.WAITING_FOR_UPLOAD:
-            session.wormhole.close()
+            # wormhole.close() returns a Deferred; suppress any errback
+            d = session.wormhole.close()
+            if d is not None:
+                d.addErrback(lambda f: None)
             self._sessions.pop(code, None)
