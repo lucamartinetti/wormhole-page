@@ -136,6 +136,7 @@ class StreamingRequest(server.Request):
             self.method = command
             self.uri = path
             self.path = path
+            self.clientproto = self.channel._version
             self.setResponseCode(411)
             self.setHeader(b"content-type", b"text/plain")
             self.write(b"Content-Length or X-Wormhole-Filesize header required\n")
@@ -148,6 +149,7 @@ class StreamingRequest(server.Request):
         self.method = command
         self.uri = path
         self.path = path
+        self.clientproto = self.channel._version
 
         self._finished_flag = [False]
         self._chunk_queue = ChunkQueue(max_chunks=16, transport=self.transport)
