@@ -218,6 +218,12 @@ def with_timeout(d, timeout, reactor, msg="operation timed out"):
         consumeErrors=True,
     )
     dl.addCallback(lambda result: result[1])
+
+    def unwrap_first_error(failure):
+        failure.trap(defer.FirstError)
+        return failure.value.subFailure
+
+    dl.addErrback(unwrap_first_error)
     return dl
 
 
@@ -499,7 +505,7 @@ def receive_file(code: str, reactor, timeout=120):
     Raises:
         BadCodeError: If the code is invalid or PAKE fails.
         OfferError: If the offer is not a single-file offer.
-        TimeoutError: If the operation times out.
+        WormholeTimeout: If the operation times out.
     """
     w = create(APPID, RELAY_URL, reactor)
     timed_out = [False]
@@ -674,7 +680,7 @@ def prepare_send(wormhole, filename: str, filesize: int, reactor, timeout=120):
 
     Raises:
         SendError: If the receiver rejects or something fails.
-        TimeoutError: If the receiver never connects.
+        WormholeTimeout: If the receiver never connects.
     """
     w = wormhole
     try:
@@ -859,7 +865,8 @@ class RootResource(resource.Resource):
             b"receive", ReceiveResource(self._reactor, self._transfer_timeout)
         )
         self.putChild(
-            b"send", SendResource(session_manager, self._reactor)
+            b"send",
+            SendResource(session_manager, self._reactor, self._transfer_timeout),
         )
 
 
@@ -1009,15 +1016,17 @@ class ReceiveCodeResource(resource.Resource):
 class SendResource(resource.Resource):
     """Routes /send/new and /send/<code>."""
 
-    def __init__(self, session_manager, reactor):
+    def __init__(self, session_manager, reactor, transfer_timeout=120):
         super().__init__()
         self._session_manager = session_manager
         self._reactor = reactor
+        self._transfer_timeout = transfer_timeout
         self.putChild(b"new", SendNewResource(session_manager, reactor))
 
     def getChild(self, name, request):
         return SendCodeResource(
-            name.decode("utf-8"), self._session_manager, self._reactor
+            name.decode("utf-8"), self._session_manager, self._reactor,
+            self._transfer_timeout,
         )
 
     def render_PUT(self, request):
@@ -1101,11 +1110,12 @@ class SendCodeResource(resource.Resource):
     """
     isLeaf = True
 
-    def __init__(self, code, session_manager, reactor):
+    def __init__(self, code, session_manager, reactor, transfer_timeout=120):
         super().__init__()
         self._code = code
         self._session_manager = session_manager
         self._reactor = reactor
+        self._transfer_timeout = transfer_timeout
 
     def render_PUT(self, request):
         self._do_upload(request)
@@ -1147,7 +1157,8 @@ class SendCodeResource(resource.Resource):
 
         try:
             connection = yield prepare_send(
-                session.wormhole, filename, filesize, self._reactor
+                session.wormhole, filename, filesize, self._reactor,
+                timeout=self._transfer_timeout,
             )
             session.state = SessionState.TRANSFERRING
 
