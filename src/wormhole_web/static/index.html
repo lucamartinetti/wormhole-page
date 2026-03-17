@@ -105,18 +105,19 @@ h1 {
 .file-name { font-weight: 600; font-size: 14px; }
 .file-size { color: #868e96; font-size: 12px; }
 .code-box {
-  background: #212529;
-  color: #51cf66;
+  background: #f1f3f5;
+  color: #212529;
+  border: 1px solid #dee2e6;
   border-radius: 8px;
   padding: 12px;
-  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
   font-size: 14px;
   text-align: center;
   margin-bottom: 14px;
   user-select: all;
   cursor: pointer;
 }
-.code-box:hover { background: #2c3035; }
+.code-box:hover { background: #e9ecef; }
 .qr-container { text-align: center; margin-bottom: 14px; }
 .qr-container canvas, .qr-container img { margin: 0 auto; }
 .qr-toggle {
@@ -142,14 +143,14 @@ h1 {
   width: 0%;
   transition: width 0.2s;
 }
-.progress-bar.done { background: #51cf66; }
+.progress-bar.done { background: #228be6; }
 .status-text {
   text-align: center;
   color: #868e96;
   font-size: 13px;
 }
 .status-text.error { color: #e03131; }
-.status-text.done { color: #2b8a3e; }
+.status-text.done { color: #212529; font-weight: 600; }
 
 /* Receive status */
 .receive-status {
