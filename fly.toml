@@ -12,7 +12,7 @@ primary_region = 'ams'
   min_machines_running = 0
 
 [[vm]]
-  memory = '512mb'
+  memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
   count = 4

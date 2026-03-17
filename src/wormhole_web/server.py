@@ -211,6 +211,8 @@ class ReceiveCodeResource(resource.Resource):
 
         try:
             reset_stall_timer()
+            BATCH = 4  # yield to reactor every N chunks for backpressure
+            batch_count = 0
             while bytes_received < offer.filesize and not finished[0]:
                 record = yield connection.receive_record()
                 remaining = offer.filesize - bytes_received
@@ -219,6 +221,13 @@ class ReceiveCodeResource(resource.Resource):
                 if not finished[0]:
                     request.write(chunk)
                     reset_stall_timer()
+                    batch_count += 1
+                    if batch_count >= BATCH:
+                        batch_count = 0
+                        # Yield to reactor so HTTP write buffer can drain
+                        drain_d = defer.Deferred()
+                        self._reactor.callLater(0, drain_d.callback, None)
+                        yield drain_d
             if not finished[0]:
                 request.finish()
                 finished[0] = True
