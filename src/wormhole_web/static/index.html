@@ -442,7 +442,6 @@ function uploadFile(file, code) {
 
   xhr.open('PUT', '/send/' + code);
   xhr.setRequestHeader('X-Wormhole-Filename', file.name);
-  xhr.setRequestHeader('Content-Length', file.size);
   xhr.send(file);
 }
 
