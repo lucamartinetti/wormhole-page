@@ -254,9 +254,10 @@ function renderQr(text) {
   container.innerHTML = '';
   if (typeof qrcode === 'undefined') return;
   const qr = qrcode(0, 'M');
-  qr.addData(text);
+  qr.addData(text, 'Byte');
   qr.make();
-  container.innerHTML = qr.createSvgTag(4, 0);
+  // cellSize=6 for better scannability on phone cameras
+  container.innerHTML = qr.createSvgTag(6, 0);
 }
 
 function toggleQrMode() {
