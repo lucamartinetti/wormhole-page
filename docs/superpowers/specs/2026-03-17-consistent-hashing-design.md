@@ -158,6 +158,44 @@ The consistent hash maps codes to machines based on the current set of running m
 
 Codes allocated after a scale event always map correctly because the sender's machine creates the wormhole AND is the hash target for that code (the hash ring is current by the time the code is allocated). The problem only affects codes allocated before the scale event.
 
+## Logging
+
+Structured logging at every routing decision point for debugging. Uses Twisted's `twisted.python.log` (already imported in the project).
+
+**ReceiveCodeResource (on every receive request):**
+```
+routing: code=7-guitarist-revenge target=d8dd33ef0d1d my_id=d8dd316f0034 action=replay
+routing: code=7-guitarist-revenge target=d8dd316f0034 my_id=d8dd316f0034 action=handle
+```
+
+**FlyRouter machine discovery:**
+```
+fly: discovered machines=[d8dd33ef0d1d, d8dd316f0034] count=2 cached=false
+fly: discovered machines=[d8dd33ef0d1d, d8dd316f0034] count=2 cached=true
+```
+
+**FlyRouter errors:**
+```
+fly: machine discovery failed error="connection refused" using_cached=true stale_age=45s
+fly: machine discovery failed error="connection refused" using_cached=false fallback=single-instance
+```
+
+**Scale events (detected when machine list changes):**
+```
+fly: ring updated old_count=2 new_count=3 added=[e9ff41ab0032] removed=[]
+fly: ring updated old_count=3 new_count=2 added=[] removed=[d8dd33ef0d1d]
+```
+
+When routing is disabled (no `FLY_MACHINE_ID`), log once at startup:
+```
+routing: disabled (not running on Fly.io)
+```
+
+When routing is enabled, log at startup:
+```
+routing: enabled my_id=d8dd316f0034 app=wormhole-web
+```
+
 ## Dependencies
 
 - `uhashring` — consistent hashing with virtual nodes (ketama algorithm). Pure Python, ~2.4 latest.
