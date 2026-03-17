@@ -30,15 +30,6 @@ Someone sends you a file with `wormhole send`. You receive it with curl:
 curl -OJ http://localhost:8080/receive/7-guitarist-revenge
 ```
 
-### Two-step send (programmatic)
-
-For scripts and programmatic use, you can separate code allocation from upload:
-
-```bash
-CODE=$(curl -s -X POST http://localhost:8080/send/new)
-curl -T myfile.tar.gz -H "X-Wormhole-Filename: myfile.tar.gz" http://localhost:8080/send/$CODE
-```
-
 ## Install
 
 Requires Python 3.12+.
@@ -61,11 +52,10 @@ podman run -p 8080:8080 wormhole-web
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `PUT` | `/send` | Send a file (inline). Streams upload directly to wormhole transit. Returns the code on the first line of the response. |
-| `POST` | `/send/new` | Allocate a wormhole code. Returns the code as plain text. |
-| `PUT` | `/send/<code>` | Upload a file for an existing session (from `/send/new`). |
+| `PUT` | `/send` | Send a file. Streams upload directly to wormhole transit. Returns the code on the first line of the response. |
 | `GET` | `/receive/<code>` | Receive a file. Streams with `Content-Disposition` and `Content-Length`. |
 | `GET` | `/health` | Health check. Returns `ok`. |
+| `GET` | `/` | Web UI. |
 
 ## How it works
 
@@ -81,8 +71,6 @@ Uses the public Magic Wormhole relay (`relay.magic-wormhole.io`) for signaling a
 wormhole-web [OPTIONS]
 
   --port PORT              Listen port (default: 8080)
-  --max-sessions N         Max concurrent send sessions (default: 128)
-  --session-ttl SECONDS    TTL for unclaimed sessions (default: 60)
   --transfer-timeout SECONDS  Stall timeout during transfers (default: 120)
 ```
 
