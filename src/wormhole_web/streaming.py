@@ -235,12 +235,36 @@ class StreamingRequest(server.Request):
 
 @defer.inlineCallbacks
 def _send_data_from_queue(connection, queue):
-    """Consume chunks from queue and pipe through wormhole transit."""
+    """Consume chunks from queue and pipe through wormhole transit.
+
+    Uses a simple rate limiter: send at most BATCH_SIZE chunks, then
+    yield control to the reactor to let the transit socket drain.
+    This prevents unbounded write buffer growth that causes OOM.
+    """
+    BATCH_SIZE = 4  # send 4 chunks (~1MB), then yield
+
+    count = 0
     while True:
         chunk = yield queue.get()
         if chunk is None:
             break
         connection.send_record(chunk)
+        count += 1
+
+        # Every BATCH_SIZE chunks, yield to the reactor so the transit
+        # socket can drain its write buffer. Without this, a fast upload
+        # (e.g., local loopback) fills the write buffer faster than the
+        # transit relay can consume it, leading to OOM.
+        if count >= BATCH_SIZE:
+            count = 0
+            # Yield to reactor to let transit socket drain
+            d = defer.Deferred()
+            try:
+                from twisted.internet import reactor as _reactor
+                _reactor.callLater(0, d.callback, None)
+            except Exception:
+                d.callback(None)
+            yield d
 
     # Wait for receiver ack
     try:
