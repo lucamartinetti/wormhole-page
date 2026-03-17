@@ -31,8 +31,16 @@ h1 {
   text-align: center;
   color: #868e96;
   font-size: 14px;
-  margin: 0 0 32px;
+  margin: 0 0 12px;
 }
+.warning {
+  text-align: center;
+  font-size: 12px;
+  color: #868e96;
+  margin: 0 0 24px;
+  line-height: 1.4;
+}
+.warning a { color: #228be6; }
 .dropzone {
   border: 2px dashed #ced4da;
   border-radius: 12px;
@@ -211,7 +219,8 @@ h1 {
 <body>
 <div class="container">
   <h1>wormhole-web</h1>
-  <p class="subtitle">Send and receive files securely</p>
+  <p class="subtitle">Send and receive files via Magic Wormhole</p>
+  <p class="warning">Not end-to-end encrypted — the server sees file contents.<br>For E2E encryption, use the <a href="https://magic-wormhole.readthedocs.io/" target="_blank">wormhole CLI</a> directly.</p>
 
   <!-- Send: initial state -->
   <div id="send-initial">
