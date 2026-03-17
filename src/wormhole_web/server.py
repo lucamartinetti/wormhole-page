@@ -1,10 +1,11 @@
 """Twisted Web HTTP server for wormhole-web."""
 
 import mimetypes
+import os
 
 from twisted.internet import defer, endpoints
 from twisted.internet import reactor as default_reactor
-from twisted.web import resource, server
+from twisted.web import resource, server, static
 
 from wormhole_web.constants import (
     DEFAULT_MAX_SESSIONS,
@@ -39,6 +40,24 @@ class RootResource(resource.Resource):
         self._session_manager = session_manager
         self._reactor = reactor or default_reactor
         self._transfer_timeout = transfer_timeout
+
+        # Static files (web UI)
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        if os.path.isdir(static_dir):
+            index_path = os.path.join(static_dir, "index.html")
+            if os.path.isfile(index_path):
+                with open(index_path, "rb") as f:
+                    self._index_html = f.read()
+            else:
+                self._index_html = None
+            self.putChild(b"static", static.File(static_dir))
+        else:
+            self._index_html = None
+
+        # Serve index.html at GET / (empty child path)
+        if self._index_html:
+            self.putChild(b"", _IndexResource(self._index_html))
+
         self.putChild(b"health", HealthResource())
         self.putChild(
             b"receive", ReceiveResource(self._reactor, self._transfer_timeout)
@@ -47,6 +66,27 @@ class RootResource(resource.Resource):
             b"send",
             SendResource(session_manager, self._reactor, self._transfer_timeout),
         )
+
+    def render_GET(self, request):
+        """Serve the web UI at GET / (direct hit without trailing slash)."""
+        if self._index_html:
+            request.setHeader(b"content-type", b"text/html; charset=utf-8")
+            return self._index_html
+        request.setResponseCode(404)
+        return b"web UI not found"
+
+
+class _IndexResource(resource.Resource):
+    """Serves index.html for the empty-string child (GET /)."""
+    isLeaf = True
+
+    def __init__(self, html_bytes):
+        super().__init__()
+        self._html = html_bytes
+
+    def render_GET(self, request):
+        request.setHeader(b"content-type", b"text/html; charset=utf-8")
+        return self._html
 
 
 def make_site(reactor=None, max_sessions=128, session_ttl=60, transfer_timeout=120):
