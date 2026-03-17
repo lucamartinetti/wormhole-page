@@ -5,10 +5,11 @@ a :class:`CodeRouter` to decide whether a receive request should be
 handled locally or replayed to the owning machine.
 """
 
+import json
 import time
+import urllib.request
 
-import treq
-from twisted.internet import defer
+from twisted.internet import defer, threads
 from twisted.python import log
 
 from wormhole_web.routing import CodeRouter
@@ -27,12 +28,18 @@ class FlyRouter:
         self._router = None
 
         self._api_url = (
-            f"http://[fdaa::3]:4280/v1/apps/{app_name}/machines"
+            f"http://_api.internal:4280/v1/apps/{app_name}/machines"
         )
 
         log.msg(
             f"routing: enabled my_id={self._my_id} app={self._app_name}"
         )
+
+    def _fetch_machines_sync(self):
+        """Synchronous HTTP call to Fly API (runs in thread)."""
+        req = urllib.request.Request(self._api_url)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read())
 
     # -- machine discovery --------------------------------------------------
 
@@ -51,8 +58,8 @@ class FlyRouter:
             defer.returnValue(self._cached_machines)
 
         try:
-            response = yield treq.get(self._api_url)
-            data = yield treq.json_content(response)
+            data = yield threads.deferToThread(self._fetch_machines_sync)
+
 
             machines = [
                 m["id"] for m in data if m.get("state") == "started"

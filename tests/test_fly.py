@@ -19,32 +19,14 @@ def _make_machines_response(machine_ids, states=None):
     ]
 
 
-def _mock_treq_get(response_json, status_code=200):
-    """Return a patched ``treq.get`` that resolves to *response_json*."""
-    mock_response = mock.Mock()
-    mock_response.code = status_code
-
-    async def fake_get(*args, **kwargs):
-        return mock_response
-
-    async def fake_json_content(resp):
-        return response_json
-
-    return fake_get, fake_json_content
-
-
 class TestFlyRouterGetMachines(unittest.TestCase):
     @defer.inlineCallbacks
     def test_returns_started_machines(self):
         data = _make_machines_response(
             ["m1", "m2", "m3"], ["started", "stopped", "started"]
         )
-        fake_get, fake_json = _mock_treq_get(data)
-
-        with mock.patch("wormhole_web.fly.treq") as mock_treq:
-            mock_treq.get = fake_get
-            mock_treq.json_content = fake_json
-            router = FlyRouter("myapp", "m1")
+        router = FlyRouter("myapp", "m1")
+        with mock.patch.object(router, "_fetch_machines_sync", return_value=data):
             machines = yield router.get_machines()
 
         self.assertEqual(sorted(machines), ["m1", "m3"])
@@ -52,82 +34,50 @@ class TestFlyRouterGetMachines(unittest.TestCase):
     @defer.inlineCallbacks
     def test_caching_within_ttl(self):
         data = _make_machines_response(["m1", "m2"])
-        call_count = [0]
+        router = FlyRouter("myapp", "m1", cache_ttl=10)
 
-        async def counting_get(*args, **kwargs):
-            call_count[0] += 1
-            return mock.Mock()
-
-        async def fake_json(resp):
-            return data
-
-        with mock.patch("wormhole_web.fly.treq") as mock_treq:
-            mock_treq.get = counting_get
-            mock_treq.json_content = fake_json
-            router = FlyRouter("myapp", "m1", cache_ttl=10)
-
+        fetch_mock = mock.Mock(return_value=data)
+        with mock.patch.object(router, "_fetch_machines_sync", fetch_mock):
             yield router.get_machines()
             yield router.get_machines()
             yield router.get_machines()
 
         # Only one actual API call — subsequent ones are cached.
-        self.assertEqual(call_count[0], 1)
+        self.assertEqual(fetch_mock.call_count, 1)
 
     @defer.inlineCallbacks
     def test_cache_expires(self):
         data = _make_machines_response(["m1", "m2"])
-        call_count = [0]
+        router = FlyRouter("myapp", "m1", cache_ttl=10)
 
-        async def counting_get(*args, **kwargs):
-            call_count[0] += 1
-            return mock.Mock()
-
-        async def fake_json(resp):
-            return data
-
-        with mock.patch("wormhole_web.fly.treq") as mock_treq, \
+        fetch_mock = mock.Mock(return_value=data)
+        with mock.patch.object(router, "_fetch_machines_sync", fetch_mock), \
              mock.patch("wormhole_web.fly.time") as mock_time:
-            mock_treq.get = counting_get
-            mock_treq.json_content = fake_json
-            # First get_machines: monotonic()=0.0 → cache miss → API call → cache_time=0.0
-            # Second get_machines: monotonic()=20.0 → 20.0-0.0 >= 10 → expired → API call
             mock_time.monotonic = mock.Mock(side_effect=[0.0, 20.0])
-            router = FlyRouter("myapp", "m1", cache_ttl=10)
 
             yield router.get_machines()
             yield router.get_machines()
 
-        self.assertEqual(call_count[0], 2)
+        self.assertEqual(fetch_mock.call_count, 2)
 
 
 class TestFlyRouterReplayHeader(unittest.TestCase):
     @defer.inlineCallbacks
     def test_returns_none_when_owning(self):
-        """get_replay_header returns None when this machine owns the code."""
         data = _make_machines_response(["m1"])
-        fake_get, fake_json = _mock_treq_get(data)
+        router = FlyRouter("myapp", "m1")
 
-        with mock.patch("wormhole_web.fly.treq") as mock_treq:
-            mock_treq.get = fake_get
-            mock_treq.json_content = fake_json
-            router = FlyRouter("myapp", "m1")
+        with mock.patch.object(router, "_fetch_machines_sync", return_value=data):
             result = yield router.get_replay_header("any-code")
 
-        # Only one machine — always owned by m1.
         self.assertIsNone(result)
 
     @defer.inlineCallbacks
     def test_returns_replay_when_not_owning(self):
-        """get_replay_header returns instance=<other> for non-owned codes."""
         data = _make_machines_response(["m1", "m2", "m3"])
-        fake_get, fake_json = _mock_treq_get(data)
+        router = FlyRouter("myapp", "m1")
 
-        with mock.patch("wormhole_web.fly.treq") as mock_treq:
-            mock_treq.get = fake_get
-            mock_treq.json_content = fake_json
-            router = FlyRouter("myapp", "m1")
-
-            # Try many codes; at least one should map to a different machine.
+        with mock.patch.object(router, "_fetch_machines_sync", return_value=data):
             replayed = False
             for i in range(100):
                 result = yield router.get_replay_header(f"code-{i}")
@@ -144,35 +94,26 @@ class TestFlyRouterAPIFailure(unittest.TestCase):
     @defer.inlineCallbacks
     def test_uses_cached_on_failure(self):
         data = _make_machines_response(["m1", "m2"])
-        fake_get, fake_json = _mock_treq_get(data)
+        router = FlyRouter("myapp", "m1", cache_ttl=10)
 
-        with mock.patch("wormhole_web.fly.treq") as mock_treq, \
+        with mock.patch.object(router, "_fetch_machines_sync", return_value=data), \
              mock.patch("wormhole_web.fly.time") as mock_time:
-            mock_treq.get = fake_get
-            mock_treq.json_content = fake_json
             mock_time.monotonic = mock.Mock(return_value=0.0)
-            router = FlyRouter("myapp", "m1", cache_ttl=10)
             yield router.get_machines()  # populate cache
 
-            # Now make API fail and expire cache
-            async def failing_get(*a, **kw):
-                raise Exception("connection refused")
-
-            mock_treq.get = failing_get
+        # Now make API fail and expire cache
+        with mock.patch.object(router, "_fetch_machines_sync", side_effect=Exception("refused")), \
+             mock.patch("wormhole_web.fly.time") as mock_time:
             mock_time.monotonic = mock.Mock(return_value=20.0)
-
             machines = yield router.get_machines()
 
         self.assertEqual(sorted(machines), ["m1", "m2"])
 
     @defer.inlineCallbacks
     def test_falls_back_to_self_without_cache(self):
-        with mock.patch("wormhole_web.fly.treq") as mock_treq:
-            async def failing_get(*a, **kw):
-                raise Exception("connection refused")
+        router = FlyRouter("myapp", "m1")
 
-            mock_treq.get = failing_get
-            router = FlyRouter("myapp", "m1")
+        with mock.patch.object(router, "_fetch_machines_sync", side_effect=Exception("refused")):
             machines = yield router.get_machines()
 
         self.assertEqual(machines, ["m1"])
