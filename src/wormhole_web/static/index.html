@@ -118,6 +118,25 @@ h1 {
   cursor: pointer;
 }
 .code-box:hover { background: #e9ecef; }
+.code-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+.btn-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: none;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #495057;
+  cursor: pointer;
+}
+.btn-action:hover { background: #f1f3f5; }
 .qr-container { text-align: center; margin-bottom: 14px; }
 .qr-container canvas, .qr-container img { margin: 0 auto; }
 .qr-toggle {
@@ -198,7 +217,17 @@ h1 {
         </div>
       </div>
       <div id="send-code-section" class="hidden">
-        <div class="code-box" id="send-code" title="Click to copy"></div>
+        <div class="code-box" id="send-code"></div>
+        <div class="code-actions">
+          <button class="btn-action" id="btn-copy" onclick="copyCode()" title="Copy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            <span id="copy-label">Copy</span>
+          </button>
+          <button class="btn-action" id="btn-share" onclick="shareCode()" title="Share" style="display:none">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            <span>Share</span>
+          </button>
+        </div>
         <div class="qr-container">
           <div id="qr-display"></div>
           <span class="qr-toggle" id="qr-toggle" onclick="toggleQrMode()">Show wormhole QR</span>
@@ -261,16 +290,51 @@ function renderQr(text) {
   container.innerHTML = qr.createSvgTag(6, 0);
 }
 
+function getReceiveUrl() {
+  return window.location.origin + '/receive/' + currentCode;
+}
+
+function updateCodeDisplay() {
+  const box = document.getElementById('send-code');
+  if (qrModeWeb) {
+    box.textContent = getReceiveUrl();
+  } else {
+    box.textContent = currentCode;
+  }
+}
+
 function toggleQrMode() {
   qrModeWeb = !qrModeWeb;
   const toggle = document.getElementById('qr-toggle');
   if (qrModeWeb) {
     toggle.textContent = 'Show wormhole QR';
-    renderQr(window.location.origin + '/receive/' + currentCode);
+    renderQr(getReceiveUrl());
   } else {
     toggle.textContent = 'Show web link QR';
     renderQr('wormhole-transfer:' + currentCode);
   }
+  updateCodeDisplay();
+}
+
+function copyCode() {
+  const text = qrModeWeb ? getReceiveUrl() : currentCode;
+  navigator.clipboard.writeText(text).then(() => {
+    const label = document.getElementById('copy-label');
+    label.textContent = 'Copied!';
+    setTimeout(() => { label.textContent = 'Copy'; }, 1000);
+  });
+}
+
+function shareCode() {
+  const text = qrModeWeb ? getReceiveUrl() : 'wormhole receive ' + currentCode;
+  const data = { text: text };
+  if (qrModeWeb) {
+    data.title = 'Receive file via wormhole-web';
+    data.url = getReceiveUrl();
+  } else {
+    data.title = 'Receive file via wormhole';
+  }
+  navigator.share(data).catch(() => {});
 }
 
 // --- Send ---
@@ -295,11 +359,15 @@ function startSend(file) {
     .then(code => {
       code = code.trim();
       currentCode = code;
-      document.getElementById('send-code').textContent = 'wormhole receive ' + code;
       show('send-code-section');
       qrModeWeb = true;
       document.getElementById('qr-toggle').textContent = 'Show wormhole QR';
-      renderQr(window.location.origin + '/receive/' + code);
+      updateCodeDisplay();
+      renderQr(getReceiveUrl());
+      // Show share button if Web Share API is available (mobile)
+      if (navigator.share) {
+        document.getElementById('btn-share').style.display = '';
+      }
       document.getElementById('send-status-text').textContent = 'uploading... waiting for receiver';
 
       // Step 2: Upload
@@ -437,14 +505,8 @@ document.getElementById('file-input').addEventListener('change', function() {
   }
 });
 
-// Copy code on click
-document.getElementById('send-code').addEventListener('click', function() {
-  navigator.clipboard.writeText(this.textContent).then(() => {
-    const orig = this.textContent;
-    this.textContent = 'Copied!';
-    setTimeout(() => { this.textContent = orig; }, 1000);
-  });
-});
+// Click code box to copy
+document.getElementById('send-code').addEventListener('click', copyCode);
 </script>
 </body>
 </html>
