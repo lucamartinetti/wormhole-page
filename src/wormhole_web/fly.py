@@ -27,7 +27,7 @@ class FlyRouter:
         self._router = None
 
         self._api_url = (
-            f"http://_api.internal:4280/v1/apps/{app_name}/machines"
+            f"http://[fdaa::3]:4280/v1/apps/{app_name}/machines"
         )
 
         log.msg(
