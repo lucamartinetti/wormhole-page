@@ -6,6 +6,7 @@ handled locally or replayed to the owning machine.
 """
 
 import json
+import os
 import time
 import urllib.request
 
@@ -38,6 +39,9 @@ class FlyRouter:
     def _fetch_machines_sync(self):
         """Synchronous HTTP call to Fly API (runs in thread)."""
         req = urllib.request.Request(self._api_url)
+        token = os.environ.get("FLY_API_TOKEN")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read())
 
