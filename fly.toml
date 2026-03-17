@@ -15,4 +15,4 @@ primary_region = 'ams'
   memory = '256mb'
   cpu_kind = 'shared'
   cpus = 1
-  count = 1
+  count = 4
