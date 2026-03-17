@@ -8,9 +8,7 @@ from twisted.internet import reactor as default_reactor
 from twisted.web import resource, server, static
 
 from wormhole_web.constants import (
-    DEFAULT_MAX_SESSIONS,
     DEFAULT_PORT,
-    DEFAULT_SESSION_TTL,
     DEFAULT_TRANSFER_TIMEOUT,
 )
 from wormhole_web.receiver import (
@@ -19,8 +17,6 @@ from wormhole_web.receiver import (
     receive_file,
 )
 from wormhole_web.util import WormholeTimeout, sanitize_filename
-from wormhole_web.sender import create_send_session, start_key_exchange
-from wormhole_web.session import SessionManager
 from wormhole_web.streaming import StreamingRequest
 
 
@@ -35,9 +31,8 @@ class HealthResource(resource.Resource):
 class RootResource(resource.Resource):
     """Root resource that wires up the URL tree."""
 
-    def __init__(self, session_manager, reactor=None, transfer_timeout=120):
+    def __init__(self, reactor=None, transfer_timeout=120):
         super().__init__()
-        self._session_manager = session_manager
         self._reactor = reactor or default_reactor
         self._transfer_timeout = transfer_timeout
 
@@ -54,17 +49,12 @@ class RootResource(resource.Resource):
         else:
             self._index_html = None
 
-        # Serve index.html at GET / (empty child path)
         if self._index_html:
             self.putChild(b"", _IndexResource(self._index_html))
 
         self.putChild(b"health", HealthResource())
         self.putChild(
             b"receive", ReceiveResource(self._reactor, self._transfer_timeout)
-        )
-        self.putChild(
-            b"send",
-            SendResource(session_manager, self._reactor, self._transfer_timeout),
         )
 
     def render_GET(self, request):
@@ -89,15 +79,10 @@ class _IndexResource(resource.Resource):
         return self._html
 
 
-def make_site(reactor=None, max_sessions=128, session_ttl=60, transfer_timeout=120):
+def make_site(reactor=None, transfer_timeout=120):
     """Create and return a Twisted Site with all resources wired up."""
     reactor = reactor or default_reactor
-    session_manager = SessionManager(
-        max_sessions=max_sessions,
-        session_ttl=session_ttl,
-        reactor=reactor,
-    )
-    root = RootResource(session_manager, reactor, transfer_timeout)
+    root = RootResource(reactor, transfer_timeout)
     site = server.Site(root)
     site.requestFactory = StreamingRequest
     return site
@@ -231,62 +216,6 @@ class ReceiveCodeResource(resource.Resource):
             yield wormhole.close()
 
 
-# --- Send resources ---
-
-
-class SendResource(resource.Resource):
-    """Container for /send/new. PUT /send and PUT /send/<code> are handled
-    by StreamingRequest before the body is buffered."""
-
-    def __init__(self, session_manager, reactor, transfer_timeout=120):
-        super().__init__()
-        self._session_manager = session_manager
-        self._reactor = reactor
-        self._transfer_timeout = transfer_timeout
-        self.putChild(b"new", SendNewResource(session_manager, reactor))
-
-
-class SendNewResource(resource.Resource):
-    """POST /send/new — allocate a wormhole code."""
-    isLeaf = True
-
-    def __init__(self, session_manager, reactor):
-        super().__init__()
-        self._session_manager = session_manager
-        self._reactor = reactor
-
-    def render_POST(self, request):
-        self._do_create(request)
-        return server.NOT_DONE_YET
-
-    @defer.inlineCallbacks
-    def _do_create(self, request):
-        try:
-            if self._session_manager.is_full():
-                request.setResponseCode(503)
-                request.setHeader(b"content-type", b"text/plain")
-                request.write(b"too many active sessions\n")
-                request.finish()
-                return
-
-            code, wormhole = yield create_send_session(self._reactor)
-            session = self._session_manager.create(code, wormhole)
-
-            # Start PAKE in background — store Deferred for Phase 2
-            d = start_key_exchange(wormhole, self._reactor)
-            d.addErrback(lambda f: f)
-            session.key_exchange_d = d
-
-            request.setHeader(b"content-type", b"text/plain")
-            request.write(code.encode() + b"\n")
-            request.finish()
-        except Exception as e:
-            request.setResponseCode(500)
-            request.setHeader(b"content-type", b"text/plain")
-            request.write(f"error: {e}\n".encode())
-            request.finish()
-
-
 # --- CLI entry point ---
 
 
@@ -296,8 +225,6 @@ def main():
     parser = argparse.ArgumentParser(description="Wormhole Web — HTTP gateway")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--max-sessions", type=int, default=DEFAULT_MAX_SESSIONS)
-    parser.add_argument("--session-ttl", type=int, default=DEFAULT_SESSION_TTL)
     parser.add_argument(
         "--transfer-timeout", type=int, default=DEFAULT_TRANSFER_TIMEOUT
     )
@@ -305,8 +232,6 @@ def main():
 
     site = make_site(
         reactor=default_reactor,
-        max_sessions=args.max_sessions,
-        session_ttl=args.session_ttl,
         transfer_timeout=args.transfer_timeout,
     )
     endpoint = endpoints.TCP4ServerEndpoint(default_reactor, args.port, interface=args.host)
