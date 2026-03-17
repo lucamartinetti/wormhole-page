@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "magic-wormhole",
     "twisted[tls]",
+    "uhashring",
 ]
 
 [project.scripts]

@@ -819,6 +819,15 @@ wheels = [
 ]
 
 [[package]]
+name = "uhashring"
+version = "2.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/11/2a7f920746b024f7bd67479489b2a4b2d3af7b34e8d5ba8ebdcfbcce21fb/uhashring-2.4.tar.gz", hash = "sha256:8ab30868f4ac079d2a8c58c43c35a294339efef7b069d260428617da48e5f020", size = 9258, upload-time = "2025-04-09T14:59:25.444Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/25/d0ca8d881042db89431646f47a97714c7213060197fd5fc5781e9a77e4f9/uhashring-2.4-py3-none-any.whl", hash = "sha256:0d6cae4ac3205ef039860b0befd6bc762f1686a276805bf1b998c8657124df62", size = 11073, upload-time = "2025-04-09T14:59:22.899Z" },
+]
+
+[[package]]
 name = "ujson"
 version = "5.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -891,6 +900,7 @@ source = { editable = "." }
 dependencies = [
     { name = "magic-wormhole" },
     { name = "twisted", extra = ["tls"] },
+    { name = "uhashring" },
 ]
 
 [package.dev-dependencies]
@@ -905,6 +915,7 @@ dev = [
 requires-dist = [
     { name = "magic-wormhole" },
     { name = "twisted", extras = ["tls"] },
+    { name = "uhashring" },
 ]
 
 [package.metadata.requires-dev]
