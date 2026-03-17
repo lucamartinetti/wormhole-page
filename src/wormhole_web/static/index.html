@@ -361,39 +361,12 @@ function startSend(file) {
 
   document.getElementById('send-filename').textContent = file.name;
   document.getElementById('send-filesize').textContent = formatSize(file.size);
-  document.getElementById('send-status-text').textContent = 'allocating code...';
+  document.getElementById('send-status-text').textContent = 'uploading...';
   document.getElementById('send-status-text').className = 'status-text';
   document.getElementById('send-progress').style.width = '0%';
   document.getElementById('send-progress').className = 'progress-bar';
   hide('send-code-section');
 
-  // Step 1: Get a code
-  fetch('/send/new', { method: 'POST' })
-    .then(r => {
-      if (!r.ok) throw new Error('Server error: ' + r.status);
-      return r.text();
-    })
-    .then(code => {
-      code = code.trim();
-      currentCode = code;
-      show('send-code-section');
-      setQrMode(true);
-      // Show share button if Web Share API is available (mobile)
-      if (navigator.share) {
-        document.getElementById('btn-share').style.display = '';
-      }
-      document.getElementById('send-status-text').textContent = 'uploading... waiting for receiver';
-
-      // Step 2: Upload
-      uploadFile(file, code);
-    })
-    .catch(err => {
-      document.getElementById('send-status-text').textContent = 'Error: ' + err.message;
-      document.getElementById('send-status-text').className = 'status-text error';
-    });
-}
-
-function uploadFile(file, code) {
   const xhr = new XMLHttpRequest();
   sendXhr = xhr;
 
@@ -406,12 +379,21 @@ function uploadFile(file, code) {
 
   let lastResponseLen = 0;
   xhr.onprogress = function() {
-    // Parse new lines from response
     const text = xhr.responseText.substring(lastResponseLen);
     lastResponseLen = xhr.responseText.length;
     const lines = text.split('\n').filter(l => l.trim());
     for (const line of lines) {
-      if (line.startsWith('transferring')) {
+      if (line.startsWith('wormhole receive ')) {
+        currentCode = line.substring('wormhole receive '.length).trim();
+        show('send-code-section');
+        setQrMode(true);
+        if (navigator.share) {
+          document.getElementById('btn-share').style.display = '';
+        }
+        document.getElementById('send-status-text').textContent = 'waiting for receiver...';
+      } else if (line.startsWith('waiting for receiver')) {
+        document.getElementById('send-status-text').textContent = 'waiting for receiver...';
+      } else if (line.startsWith('transferring')) {
         document.getElementById('send-status-text').textContent = 'transferring...';
       } else if (line.startsWith('transfer complete')) {
         markSendComplete();
@@ -427,8 +409,17 @@ function uploadFile(file, code) {
     if (xhr.status !== 200) {
       document.getElementById('send-status-text').textContent = 'Error: server returned ' + xhr.status;
       document.getElementById('send-status-text').className = 'status-text error';
+      return;
     }
-    // Check final response for transfer complete
+    // Parse full response on load (Safari fallback — onprogress may not fire)
+    const lines = xhr.responseText.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('wormhole receive ') && !currentCode) {
+        currentCode = line.substring('wormhole receive '.length).trim();
+        show('send-code-section');
+        setQrMode(true);
+      }
+    }
     if (xhr.responseText.includes('transfer complete')) {
       markSendComplete();
     }
@@ -440,7 +431,7 @@ function uploadFile(file, code) {
     document.getElementById('send-status-text').className = 'status-text error';
   };
 
-  xhr.open('PUT', '/send/' + code);
+  xhr.open('PUT', '/send');
   xhr.setRequestHeader('X-Wormhole-Filename', file.name);
   xhr.send(file);
 }
