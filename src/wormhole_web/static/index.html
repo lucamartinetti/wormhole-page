@@ -462,34 +462,67 @@ function cancelSend() {
 }
 
 // --- Receive ---
-function startReceive() {
+async function startReceive() {
   const input = document.getElementById('receive-code');
   const code = input.value.trim();
   if (!code) return;
 
   hide('receive-initial');
   show('receive-status');
-  document.getElementById('receive-status-text').textContent = 'starting download...';
+  document.getElementById('receive-status-text').textContent = 'connecting...';
 
-  // Trigger download via hidden anchor
-  const a = document.createElement('a');
-  a.href = '/receive/' + encodeURIComponent(code);
-  a.download = '';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  try {
+    const response = await fetch('/receive/' + encodeURIComponent(code));
 
-  // Reset after a moment
-  setTimeout(() => {
-    hide('receive-status');
-    show('receive-initial');
-    input.value = '';
-  }, 3000);
+    if (!response.ok) {
+      const text = await response.text();
+      document.getElementById('receive-status-text').textContent = text.trim() || ('Error: ' + response.status);
+      document.getElementById('receive-status-text').style.color = '#e03131';
+      return;
+    }
+
+    document.getElementById('receive-status-text').textContent = 'downloading...';
+
+    // Get filename from Content-Disposition header
+    const disposition = response.headers.get('content-disposition');
+    let filename = 'download';
+    if (disposition) {
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      if (match) filename = match[1];
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    document.getElementById('receive-status-text').textContent = 'Download complete!';
+    document.getElementById('receive-status-text').style.color = '#212529';
+    document.getElementById('receive-status-text').style.fontWeight = '600';
+
+    setTimeout(() => {
+      hide('receive-status');
+      show('receive-initial');
+      document.getElementById('receive-status-text').style.color = '';
+      document.getElementById('receive-status-text').style.fontWeight = '';
+      input.value = '';
+    }, 2000);
+  } catch (e) {
+    document.getElementById('receive-status-text').textContent = 'Connection error';
+    document.getElementById('receive-status-text').style.color = '#e03131';
+  }
 }
 
 function cancelReceive() {
   hide('receive-status');
   show('receive-initial');
+  document.getElementById('receive-status-text').style.color = '';
+  document.getElementById('receive-status-text').style.fontWeight = '';
 }
 
 // --- Drag and drop ---
