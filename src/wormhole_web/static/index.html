@@ -41,6 +41,30 @@ h1 {
   line-height: 1.4;
 }
 .warning a { color: #228be6; }
+.encrypted {
+  text-align: center;
+  font-size: 12px;
+  color: #868e96;
+  margin: 0 0 24px;
+  line-height: 1.4;
+}
+.verifier {
+  text-align: center;
+  font-size: 24px;
+  margin: 8px 0;
+  letter-spacing: 4px;
+}
+.verifier.small {
+  font-size: 16px;
+  color: #868e96;
+  margin: 4px 0;
+}
+.transfer-info {
+  text-align: center;
+  color: #868e96;
+  font-size: 13px;
+  margin-top: 4px;
+}
 .dropzone {
   border: 2px dashed #ced4da;
   border-radius: 12px;
@@ -280,7 +304,7 @@ h1 {
 <div class="container">
   <h1>wormhole-web</h1>
   <p class="subtitle">Send and receive files via Magic Wormhole</p>
-  <p class="warning">Not end-to-end encrypted — the server sees file contents.<br>For E2E encryption, use the <a href="https://magic-wormhole.readthedocs.io/" target="_blank">wormhole CLI</a> directly.</p>
+  <p id="encryption-status" class="warning">Not end-to-end encrypted — the server sees file contents.<br>For E2E encryption, use the <a href="https://magic-wormhole.readthedocs.io/" target="_blank">wormhole CLI</a> directly.</p>
 
   <!-- Send: initial state -->
   <div id="send-initial">
@@ -320,8 +344,10 @@ h1 {
           <div id="qr-display"></div>
         </div>
       </div>
+      <div id="send-verifier" class="verifier hidden"></div>
       <div class="progress-track"><div class="progress-bar" id="send-progress"></div></div>
       <div class="status-text" id="send-status-text">allocating code...</div>
+      <div id="send-transfer-info" class="transfer-info hidden"></div>
       <button class="btn btn-cancel" onclick="cancelSend()">Cancel</button>
     </div>
   </div>
@@ -340,8 +366,20 @@ h1 {
   <!-- Receive: status state -->
   <div id="receive-status" class="hidden">
     <div class="receive-status">
-      <span class="spinner"></span>
+      <div id="receive-file-info" class="file-info hidden">
+        <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <div>
+          <div class="file-name" id="receive-filename"></div>
+          <div class="file-size" id="receive-filesize"></div>
+        </div>
+      </div>
+      <div id="receive-verifier" class="verifier hidden"></div>
+      <div id="receive-progress-section" class="hidden">
+        <div class="progress-track"><div class="progress-bar" id="receive-progress"></div></div>
+      </div>
+      <div id="receive-spinner" class=""><span class="spinner"></span></div>
       <span id="receive-status-text">starting download...</span>
+      <div id="receive-transfer-info" class="transfer-info hidden"></div>
       <button class="btn btn-cancel" onclick="cancelReceive()">Cancel</button>
     </div>
   </div>
@@ -384,6 +422,7 @@ h1 {
 </div>
 
 <script src="/static/qr.js"></script>
+<script src="/static/wasm-client.js"></script>
 <script>
 // --- State ---
 let sendXhr = null;
@@ -461,6 +500,63 @@ function shareCode() {
 
 // --- Send ---
 function startSend(file) {
+  if (window.wasmClient && window.wasmClient.ready) {
+    startSendWasm(file);
+  } else {
+    startSendXhr(file);
+  }
+}
+
+function startSendWasm(file) {
+  hide('send-initial');
+  show('send-status');
+
+  document.getElementById('send-filename').textContent = file.name;
+  document.getElementById('send-filesize').textContent = formatSize(file.size);
+  document.getElementById('send-status-text').textContent = 'allocating code...';
+  document.getElementById('send-status-text').className = 'status-text';
+  document.getElementById('send-progress').style.width = '0%';
+  document.getElementById('send-progress').className = 'progress-bar';
+  hide('send-code-section');
+  hide('send-verifier');
+  hide('send-transfer-info');
+
+  window.wasmClient.send(file, {
+    onCode(code) {
+      currentCode = code;
+      show('send-code-section');
+      setQrMode(true);
+      if (navigator.share) {
+        document.getElementById('btn-share').style.display = '';
+      }
+    },
+    onVerifier(emoji) {
+      document.getElementById('send-verifier').textContent = emoji;
+      show('send-verifier');
+    },
+    onStatus(text) {
+      document.getElementById('send-status-text').textContent = text;
+    },
+    onProgress(pct, speed, connType) {
+      document.getElementById('send-progress').style.width = pct + '%';
+      if (speed) {
+        const info = speed + (connType ? ' \u00b7 ' + connType : '');
+        document.getElementById('send-transfer-info').textContent = info;
+        show('send-transfer-info');
+      }
+    },
+    onError(msg) {
+      document.getElementById('send-status-text').textContent = msg;
+      document.getElementById('send-status-text').className = 'status-text error';
+      hide('send-verifier');
+    },
+    onComplete() {
+      markSendComplete();
+    },
+  });
+}
+
+function startSendXhr(file) {
   hide('send-initial');
   show('send-status');
 
@@ -471,6 +567,8 @@ function startSend(file) {
   document.getElementById('send-progress').style.width = '0%';
   document.getElementById('send-progress').className = 'progress-bar';
   hide('send-code-section');
+  hide('send-verifier');
+  hide('send-transfer-info');
 
   const xhr = new XMLHttpRequest();
   sendXhr = xhr;
@@ -516,7 +614,6 @@ function startSend(file) {
       document.getElementById('send-status-text').className = 'status-text error';
       return;
     }
-    // Parse full response on load (Safari fallback — onprogress may not fire)
     const lines = xhr.responseText.split('\n');
     for (const line of lines) {
       if (line.startsWith('wormhole receive ') && !currentCode) {
@@ -563,11 +660,66 @@ function startReceive() {
   const code = input.value.trim();
   if (!code) return;
 
+  if (window.wasmClient && window.wasmClient.ready) {
+    startReceiveWasm(code);
+  } else {
+    startReceiveXhr(code);
+  }
+}
+
+function startReceiveWasm(code) {
+  hide('receive-initial');
+  show('receive-status');
+  hide('receive-file-info');
+  hide('receive-verifier');
+  hide('receive-progress-section');
+  hide('receive-transfer-info');
+  document.getElementById('receive-spinner').style.display = '';
+  document.getElementById('receive-status-text').textContent = 'establishing encrypted connection...';
+
+  window.wasmClient.receive(code, {
+    onFileInfo(filename, filesize) {
+      document.getElementById('receive-filename').textContent = filename;
+      document.getElementById('receive-filesize').textContent = formatSize(filesize);
+      show('receive-file-info');
+      document.getElementById('receive-spinner').style.display = 'none';
+    },
+    onVerifier(emoji) {
+      document.getElementById('receive-verifier').textContent = emoji;
+      show('receive-verifier');
+    },
+    onStatus(text) {
+      document.getElementById('receive-status-text').textContent = text;
+    },
+    onProgress(pct, speed, connType) {
+      show('receive-progress-section');
+      document.getElementById('receive-progress').style.width = pct + '%';
+      if (speed) {
+        const info = speed + (connType ? ' \u00b7 ' + connType : '');
+        document.getElementById('receive-transfer-info').textContent = info;
+        show('receive-transfer-info');
+      }
+    },
+    onError(msg) {
+      document.getElementById('receive-status-text').textContent = msg;
+      document.getElementById('receive-status-text').className = 'status-text error';
+      document.getElementById('receive-spinner').style.display = 'none';
+    },
+    onComplete() {
+      document.getElementById('receive-progress').style.width = '100%';
+      document.getElementById('receive-progress').className = 'progress-bar done';
+      document.getElementById('receive-status-text').textContent = 'Transfer complete!';
+      document.getElementById('receive-status-text').className = 'status-text done';
+      hide('receive-verifier');
+    },
+  });
+}
+
+function startReceiveXhr(code) {
   hide('receive-initial');
   show('receive-status');
   document.getElementById('receive-status-text').textContent = 'starting download...';
 
-  // Trigger download via hidden anchor
   const a = document.createElement('a');
   a.href = '/receive/' + encodeURIComponent(code);
   a.download = '';
@@ -575,11 +727,10 @@ function startReceive() {
   a.click();
   document.body.removeChild(a);
 
-  // Reset after a moment
   setTimeout(() => {
     hide('receive-status');
     show('receive-initial');
-    input.value = '';
+    document.getElementById('receive-code').value = '';
   }, 3000);
 }
 
@@ -633,6 +784,34 @@ function copyCli(id) {
     setTimeout(() => { btn.innerHTML = orig; }, 1000);
   });
 }
+
+// --- WASM initialization ---
+if (window.wasmClient) {
+  window.wasmClient.initWasm();
+}
+
+// --- Pre-filled receive from URL ---
+(function() {
+  const match = window.location.pathname.match(/^\/receive\/(.+)$/);
+  if (match) {
+    const code = decodeURIComponent(match[1]);
+    // Wait for WASM to be ready (up to 3 seconds), then start
+    let attempts = 0;
+    const tryStart = () => {
+      if (window.wasmClient && window.wasmClient.ready) {
+        document.getElementById('receive-code').value = code;
+        startReceive();
+      } else if (attempts < 30) {
+        attempts++;
+        setTimeout(tryStart, 100);
+      } else {
+        // Fallback: fill the code input and let user click
+        document.getElementById('receive-code').value = code;
+      }
+    };
+    tryStart();
+  }
+})();
 </script>
 </body>
 </html>
