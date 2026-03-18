@@ -163,7 +163,7 @@ impl AsyncWrite for ChannelWriter {
 #[wasm_bindgen]
 pub struct WormholeSender {
     code: String,
-    wormhole: Option<Wormhole>,
+    mailbox: Option<MailboxConnection<AppVersion>>,
     verifier_bytes: Option<Vec<u8>>,
     conn_type: Option<String>,
     chunk_tx: Option<mpsc::Sender<Vec<u8>>>,
@@ -173,20 +173,20 @@ pub struct WormholeSender {
 #[wasm_bindgen]
 impl WormholeSender {
     /// Allocate a code and connect to the mailbox relay.
+    /// Returns immediately with the code — does NOT wait for receiver.
     #[wasm_bindgen]
     pub async fn create() -> Result<WormholeSender, JsError> {
+        web_sys::console::log_1(&"[wormhole] connecting to mailbox relay...".into());
         let config = app_config();
         let mailbox = MailboxConnection::create(config, 2)
             .await
             .map_err(|e| JsError::new(&format!("Failed to connect to relay: {e}")))?;
         let code = mailbox.code().to_string();
-        let wormhole = Wormhole::connect(mailbox)
-            .await
-            .map_err(|e| JsError::new(&format!("Key exchange failed: {e}")))?;
+        web_sys::console::log_1(&format!("[wormhole] code allocated: {code}").into());
 
         Ok(WormholeSender {
             code,
-            wormhole: Some(wormhole),
+            mailbox: Some(mailbox),
             verifier_bytes: None,
             conn_type: None,
             chunk_tx: None,
@@ -212,22 +212,28 @@ impl WormholeSender {
         self.conn_type.clone()
     }
 
-    /// Start the file transfer. This performs SPAKE2 key exchange, sends the
-    /// file offer, waits for acceptance, and sets up transit. After this
-    /// returns, call send_chunk() to stream the file data.
+    /// Wait for receiver, perform SPAKE2 key exchange, send file offer,
+    /// and set up transit. After this returns, call send_chunk() to stream data.
     #[wasm_bindgen]
     pub async fn negotiate(
         &mut self,
         filename: &str,
         filesize: u64,
     ) -> Result<(), JsError> {
-        let wormhole = self
-            .wormhole
+        let mailbox = self
+            .mailbox
             .take()
             .ok_or_else(|| JsError::new("Already negotiated"))?;
 
+        // SPAKE2 key exchange — blocks until receiver connects
+        web_sys::console::log_1(&"[wormhole] waiting for receiver (SPAKE2)...".into());
+        let wormhole = Wormhole::connect(mailbox)
+            .await
+            .map_err(|e| JsError::new(&format!("Key exchange failed: {e}")))?;
+
         // Store verifier before we consume wormhole
         self.verifier_bytes = Some(AsRef::<[u8]>::as_ref(wormhole.verifier()).to_vec());
+        web_sys::console::log_1(&"[wormhole] SPAKE2 complete, starting file transfer...".into());
 
         // Create channel for streaming chunks from JS to Rust
         let (chunk_tx, chunk_rx) = mpsc::channel(16);
@@ -315,17 +321,17 @@ impl WormholeSender {
     pub fn close(mut self) {
         self.chunk_tx.take();
         self.done_rx.take();
-        self.wormhole.take();
+        self.mailbox.take();
     }
 }
 
 /// A wormhole receiver that runs entirely in the browser via WASM.
 #[wasm_bindgen]
 pub struct WormholeReceiver {
-    wormhole: Option<Wormhole>,
+    mailbox: Option<MailboxConnection<AppVersion>>,
     verifier_bytes: Option<Vec<u8>>,
     conn_type: Option<String>,
-    receive_request: Option<transfer::ReceiveRequest>,  // v1::ReceiveRequest when no experimental-v2
+    receive_request: Option<transfer::ReceiveRequest>,
     chunk_rx: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
     done_rx: Option<oneshot::Receiver<Result<(), String>>>,
 }
@@ -335,6 +341,7 @@ impl WormholeReceiver {
     /// Connect to mailbox relay with the given code.
     #[wasm_bindgen]
     pub async fn create(code: &str) -> Result<WormholeReceiver, JsError> {
+        web_sys::console::log_1(&format!("[wormhole] connecting to mailbox with code: {code}").into());
         let config = app_config();
         let code: Code = code
             .parse()
@@ -342,12 +349,10 @@ impl WormholeReceiver {
         let mailbox = MailboxConnection::connect(config, code, false)
             .await
             .map_err(|e| JsError::new(&format!("Failed to connect: {e}")))?;
-        let wormhole = Wormhole::connect(mailbox)
-            .await
-            .map_err(|e| JsError::new(&format!("Key exchange failed: {e}")))?;
+        web_sys::console::log_1(&"[wormhole] connected to mailbox".into());
 
         Ok(WormholeReceiver {
-            wormhole: Some(wormhole),
+            mailbox: Some(mailbox),
             verifier_bytes: None,
             conn_type: None,
             receive_request: None,
@@ -368,16 +373,22 @@ impl WormholeReceiver {
         self.conn_type.clone()
     }
 
-    /// Wait for the file offer and negotiate transit.
+    /// Perform SPAKE2 exchange, wait for file offer, negotiate transit.
     /// Returns file metadata (name, size).
     #[wasm_bindgen]
     pub async fn negotiate(&mut self) -> Result<FileOffer, JsError> {
-        let wormhole = self
-            .wormhole
+        let mailbox = self
+            .mailbox
             .take()
             .ok_or_else(|| JsError::new("Already negotiated"))?;
 
+        web_sys::console::log_1(&"[wormhole] performing SPAKE2 key exchange...".into());
+        let wormhole = Wormhole::connect(mailbox)
+            .await
+            .map_err(|e| JsError::new(&format!("Key exchange failed: {e}")))?;
+
         self.verifier_bytes = Some(AsRef::<[u8]>::as_ref(wormhole.verifier()).to_vec());
+        web_sys::console::log_1(&"[wormhole] SPAKE2 complete, waiting for file offer...".into());
 
         let relay = relay_hints();
         let req = transfer::request_file(
@@ -471,7 +482,7 @@ impl WormholeReceiver {
     pub fn close(mut self) {
         self.chunk_rx.take();
         self.done_rx.take();
-        self.wormhole.take();
+        self.mailbox.take();
         self.receive_request.take();
     }
 }
