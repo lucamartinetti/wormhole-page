@@ -214,6 +214,66 @@ h1 {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .hidden { display: none; }
+
+/* CLI & Apps section */
+.cli-section {
+  margin-top: 32px;
+  border-top: 1px solid #e9ecef;
+  padding-top: 16px;
+}
+.cli-section summary {
+  cursor: pointer;
+  text-align: center;
+  color: #868e96;
+  font-size: 13px;
+  list-style: none;
+  user-select: none;
+}
+.cli-section summary::-webkit-details-marker { display: none; }
+.cli-section summary::before { content: "▸ "; }
+.cli-section[open] summary::before { content: "▾ "; }
+.cli-content { margin-top: 16px; }
+.cli-group { margin-bottom: 16px; }
+.cli-group h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #868e96;
+  margin: 0 0 6px;
+}
+.cli-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f1f3f5;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.cli-cmd code {
+  flex: 1;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+  color: #212529;
+  word-break: break-all;
+}
+.btn-copy-cmd {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #868e96;
+  padding: 2px;
+}
+.btn-copy-cmd:hover { color: #228be6; }
+.cli-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 13px;
+}
+.cli-links a { color: #228be6; text-decoration: none; }
+.cli-links a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -285,6 +345,41 @@ h1 {
       <button class="btn btn-cancel" onclick="cancelReceive()">Cancel</button>
     </div>
   </div>
+
+  <!-- CLI & Apps section -->
+  <details class="cli-section">
+    <summary>CLI commands &amp; apps</summary>
+    <div class="cli-content">
+      <div class="cli-group">
+        <h3>Send via curl</h3>
+        <div class="cli-cmd">
+          <code id="cli-send">curl -T file.tar.gz -H "X-Wormhole-Filename: file.tar.gz" <span class="cli-host"></span>/send</code>
+          <button class="btn-copy-cmd" onclick="copyCli('cli-send')" title="Copy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="cli-group">
+        <h3>Receive via curl</h3>
+        <div class="cli-cmd">
+          <code id="cli-recv">curl -OJ <span class="cli-host"></span>/receive/&lt;code&gt;</code>
+          <button class="btn-copy-cmd" onclick="copyCli('cli-recv')" title="Copy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="cli-group">
+        <h3>Compatible apps</h3>
+        <div class="cli-links">
+          <a href="https://magic-wormhole.readthedocs.io/" target="_blank">magic-wormhole</a> (Python CLI)
+          <a href="https://github.com/magic-wormhole/magic-wormhole.rs" target="_blank">wormhole-rs</a> (Rust CLI)
+          <a href="https://github.com/psanford/wormhole-william" target="_blank">wormhole-william</a> (Go CLI)
+          <a href="https://apps.apple.com/app/warp-file-transfer/id1451980008" target="_blank">Warp</a> (iOS)
+          <a href="https://github.com/niclas-nickleback/wormhole-william-mobile" target="_blank">Wormhole Mobile</a> (Android)
+        </div>
+      </div>
+    </div>
+  </details>
 </div>
 
 <script src="/static/qr.js"></script>
@@ -520,6 +615,23 @@ document.getElementById('file-input').addEventListener('change', function() {
 
 // Click code box to copy
 document.getElementById('send-code').addEventListener('click', copyCode);
+
+// --- CLI section ---
+// Populate host in CLI commands
+document.querySelectorAll('.cli-host').forEach(el => {
+  el.textContent = window.location.origin;
+});
+
+function copyCli(id) {
+  const el = document.getElementById(id);
+  const text = el.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = el.parentElement.querySelector('.btn-copy-cmd');
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span style="font-size:12px;color:#228be6">✓</span>';
+    setTimeout(() => { btn.innerHTML = orig; }, 1000);
+  });
+}
 </script>
 </body>
 </html>
