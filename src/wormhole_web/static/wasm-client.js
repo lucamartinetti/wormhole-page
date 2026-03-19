@@ -141,12 +141,13 @@ async function wasmReceive(code, callbacks) {
     onStatus('transferring...');
     resetSpeed();
 
-    // Try File System Access API for large files
+    // Try File System Access API to stream directly to disk (Chromium only).
+    // Falls back to in-memory Blob for Firefox/Safari.
     let writer = null;
     let chunks = null;
-    const useFileSystemAccess = filesize > 100 * 1024 * 1024 && 'showSaveFilePicker' in window;
+    const MAX_BLOB_SIZE = 512 * 1024 * 1024; // 512MB in-memory limit
 
-    if (useFileSystemAccess) {
+    if ('showSaveFilePicker' in window) {
       try {
         const handle = await window.showSaveFilePicker({ suggestedName: filename });
         writer = await handle.createWritable();
@@ -155,12 +156,17 @@ async function wasmReceive(code, callbacks) {
           onError('Save cancelled');
           return;
         }
-        // Fall back to Blob
         writer = null;
       }
     }
 
     if (!writer) {
+      if (filesize > MAX_BLOB_SIZE) {
+        onError('File too large for this browser (' + formatSize(filesize) +
+          '). Use Chrome for files over 512 MB, or use the wormhole CLI.');
+        try { receiver.close(); } catch (_) {}
+        return;
+      }
       chunks = [];
     }
 
