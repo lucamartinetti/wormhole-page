@@ -13,8 +13,13 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
+/// Use WSS for the mailbox relay — browsers block mixed content (WS from HTTPS page).
+const RENDEZVOUS_SERVER: &str = "wss://relay.magic-wormhole.io:443/v1";
+
 fn app_config() -> AppConfig<AppVersion> {
-    transfer::APP_CONFIG.clone()
+    transfer::APP_CONFIG
+        .clone()
+        .rendezvous_url(std::borrow::Cow::Borrowed(RENDEZVOUS_SERVER))
 }
 
 /// Default public transit relay (TCP). The CLI peer will connect here directly.
