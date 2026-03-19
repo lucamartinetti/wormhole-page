@@ -73,7 +73,7 @@ const TRANSIT_RELAY_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') 
 
 // --- WASM Send ---
 async function wasmSend(file, callbacks) {
-  const { onCode, onVerifier, onProgress, onStatus, onError, onComplete } = callbacks;
+  const { onCode, onProgress, onStatus, onError, onComplete } = callbacks;
 
   let sender = null;
   try {
@@ -84,9 +84,6 @@ async function wasmSend(file, callbacks) {
 
     onStatus('waiting for receiver...');
     await sender.negotiate(file.name, BigInt(file.size));
-
-    const verifier = sender.verifier();
-    if (verifier) onVerifier(verifier);
 
     const connType = sender.connection_type();
     onStatus('transferring...');
@@ -118,7 +115,7 @@ async function wasmSend(file, callbacks) {
 
 // --- WASM Receive ---
 async function wasmReceive(code, callbacks) {
-  const { onFileInfo, onVerifier, onProgress, onStatus, onError, onComplete } = callbacks;
+  const { onFileInfo, onProgress, onStatus, onError, onComplete } = callbacks;
 
   let receiver = null;
   try {
@@ -127,9 +124,6 @@ async function wasmReceive(code, callbacks) {
 
     onStatus('waiting for file offer...');
     const offer = await receiver.negotiate();
-
-    const verifier = receiver.verifier();
-    if (verifier) onVerifier(verifier);
 
     const filename = sanitizeFilename(offer.filename);
     const filesize = Number(offer.filesize);
