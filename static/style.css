@@ -180,7 +180,36 @@ h1 {
   background: var(--dropzone-hover-bg);
   animation: none;
 }
-.dropzone input { display: none; }
+.dropzone input[type="file"] { display: none; }
+.dropzone-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 12px;
+}
+.btn-browse {
+  padding: 6px 16px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.btn-browse:hover {
+  background: var(--bg-input-hover);
+  border-color: var(--accent);
+}
+.dropzone-file-list {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-top: 8px;
+  text-align: left;
+  max-height: 120px;
+  overflow-y: auto;
+}
 
 /* === Receive Row === */
 .receive-row {

@@ -39,9 +39,15 @@
   <div id="panel-send" role="tabpanel" aria-labelledby="main-tab-send">
     <!-- Send: initial state -->
     <div id="send-initial">
-      <div class="dropzone" id="dropzone" onclick="document.getElementById('file-input').click()" role="button" tabindex="0" aria-label="Drop a file here or click to browse">
-        Drop a file here or click to browse
-        <input type="file" id="file-input" accept="*/*" aria-label="Select file to send">
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Drop files here or click to browse">
+        <span id="dropzone-text">Drop files here or click to browse</span>
+        <div id="dropzone-file-list" class="dropzone-file-list hidden"></div>
+        <div class="dropzone-buttons">
+          <button class="btn-browse" id="btn-browse-files" type="button" onclick="event.stopPropagation(); document.getElementById('file-input').click()">Files</button>
+          <button class="btn-browse" id="btn-browse-folder" type="button" onclick="event.stopPropagation(); document.getElementById('folder-input').click()">Folder</button>
+        </div>
+        <input type="file" id="file-input" accept="*/*" multiple aria-label="Select files to send">
+        <input type="file" id="folder-input" webkitdirectory aria-label="Select folder to send">
       </div>
     </div>
 
@@ -152,6 +158,7 @@
 </div>
 
 <script src="/static/qr.js"></script>
+<script src="/static/jszip.min.js"></script>
 <script src="/static/wasm-client.js"></script>
 <script>
 // --- State ---
@@ -293,12 +300,83 @@ function shareCode() {
 }
 
 // --- Send ---
-function startSend(file) {
+function startSend(files) {
   if (!window.wasmClient || !window.wasmClient.ready) {
     // WASM not loaded -- can't proceed
     return;
   }
-  startSendWasm(file);
+  // Convert to array
+  var fileList = Array.from(files);
+  if (fileList.length === 0) return;
+
+  if (fileList.length === 1) {
+    // Single file — send as-is
+    startSendWasm(fileList[0]);
+  } else {
+    // Multiple files — zip first
+    startSendMultiple(fileList);
+  }
+}
+
+async function startSendMultiple(files) {
+  hide('send-initial');
+  show('send-status');
+
+  var totalSize = files.reduce(function(s, f) { return s + f.size; }, 0);
+  document.getElementById('send-filename').textContent = files.length + ' files';
+  document.getElementById('send-filesize').textContent = formatSize(totalSize);
+  document.getElementById('send-status-text').textContent = 'creating zip...';
+  document.getElementById('send-status-text').className = 'status-text';
+  document.getElementById('send-progress').style.width = '0%';
+  document.getElementById('send-progress').className = 'progress-bar';
+  document.getElementById('send-progress').setAttribute('aria-valuenow', '0');
+  hide('send-code-section');
+  hide('send-transfer-info');
+
+  var check = document.getElementById('send-checkmark');
+  if (check) { check.style.display = 'none'; check.classList.remove('animate'); }
+
+  try {
+    var zip = new JSZip();
+    for (var i = 0; i < files.length; i++) {
+      // Use webkitRelativePath if available (folder upload), otherwise just name
+      var path = files[i].webkitRelativePath || files[i].name;
+      zip.file(path, files[i]);
+    }
+
+    // Determine zip name from folder or generic
+    var zipName = 'files.zip';
+    if (files[0].webkitRelativePath) {
+      var folderName = files[0].webkitRelativePath.split('/')[0];
+      if (folderName) zipName = folderName + '.zip';
+    }
+
+    var blob = await zip.generateAsync({ type: 'blob', streamFiles: true }, function(metadata) {
+      var pct = Math.round(metadata.percent);
+      document.getElementById('send-status-text').textContent = 'creating zip... ' + pct + '%';
+      document.getElementById('send-progress').style.width = pct + '%';
+      document.getElementById('send-progress').setAttribute('aria-valuenow', String(pct));
+    });
+
+    // Reset progress for actual transfer
+    document.getElementById('send-progress').style.width = '0%';
+    document.getElementById('send-progress').setAttribute('aria-valuenow', '0');
+
+    var file = new File([blob], zipName, { type: 'application/zip' });
+    document.getElementById('send-filename').textContent = zipName;
+    document.getElementById('send-filesize').textContent = files.length + ' files \u00b7 ' + formatSize(file.size);
+
+    startSendWasm(file);
+  } catch (err) {
+    document.getElementById('send-status-text').textContent = 'Failed to create zip: ' + (err.message || String(err));
+    document.getElementById('send-status-text').className = 'status-text error';
+    var btn = document.getElementById('send-cancel-btn');
+    btn.textContent = 'New Transfer';
+    btn.className = 'btn';
+    btn.style.width = '100%';
+    btn.style.marginTop = '8px';
+    btn.focus();
+  }
 }
 
 function startSendWasm(file) {
@@ -306,7 +384,10 @@ function startSendWasm(file) {
   show('send-status');
 
   document.getElementById('send-filename').textContent = file.name;
-  document.getElementById('send-filesize').textContent = formatSize(file.size);
+  // Only update filesize if not already set by startSendMultiple
+  if (!document.getElementById('send-filesize').textContent.includes('files')) {
+    document.getElementById('send-filesize').textContent = formatSize(file.size);
+  }
   document.getElementById('send-status-text').textContent = 'allocating code...';
   document.getElementById('send-status-text').className = 'status-text';
   document.getElementById('send-progress').style.width = '0%';
@@ -386,6 +467,10 @@ function cancelSend() {
   hide('send-status');
   show('send-initial');
   document.getElementById('file-input').value = '';
+  document.getElementById('folder-input').value = '';
+  document.getElementById('dropzone-file-list').classList.add('hidden');
+  document.getElementById('dropzone-file-list').innerHTML = '';
+  document.getElementById('dropzone-text').textContent = 'Drop files here or click to browse';
   // Reset button
   var btn = document.getElementById('send-cancel-btn');
   btn.textContent = 'Cancel';
@@ -498,6 +583,31 @@ function cancelReceive() {
   if (prog) prog.setAttribute('aria-valuenow', '0');
 }
 
+// --- File selection display ---
+function showSelectedFiles(files) {
+  var fileList = Array.from(files);
+  if (fileList.length === 0) return;
+  if (fileList.length === 1) {
+    startSend(fileList);
+    return;
+  }
+  // Show file list preview in dropzone before sending
+  var totalSize = fileList.reduce(function(s, f) { return s + f.size; }, 0);
+  var listEl = document.getElementById('dropzone-file-list');
+  var summary = fileList.length + ' files \u00b7 ' + formatSize(totalSize);
+  var names = fileList.slice(0, 5).map(function(f) {
+    var name = f.webkitRelativePath || f.name;
+    return name.length > 40 ? name.slice(0, 37) + '...' : name;
+  });
+  if (fileList.length > 5) names.push('... and ' + (fileList.length - 5) + ' more');
+  listEl.innerHTML = '<strong>' + summary + '</strong><br>' + names.join('<br>');
+  listEl.classList.remove('hidden');
+  document.getElementById('dropzone-text').textContent = 'Ready to send';
+
+  // Auto-start sending
+  startSend(fileList);
+}
+
 // --- Drag and drop ---
 var dz = document.getElementById('dropzone');
 
@@ -514,7 +624,7 @@ dz.addEventListener('drop', function(e) {
   e.preventDefault();
   dz.classList.remove('dragover');
   if (e.dataTransfer.files.length > 0) {
-    startSend(e.dataTransfer.files[0]);
+    showSelectedFiles(e.dataTransfer.files);
   }
 });
 
@@ -525,9 +635,22 @@ dz.addEventListener('keydown', function(e) {
   }
 });
 
+// Clicking the dropzone (not on a button) opens file picker
+dz.addEventListener('click', function(e) {
+  if (e.target === dz || e.target.id === 'dropzone-text') {
+    document.getElementById('file-input').click();
+  }
+});
+
 document.getElementById('file-input').addEventListener('change', function() {
   if (this.files.length > 0) {
-    startSend(this.files[0]);
+    showSelectedFiles(this.files);
+  }
+});
+
+document.getElementById('folder-input').addEventListener('change', function() {
+  if (this.files.length > 0) {
+    showSelectedFiles(this.files);
   }
 });
 
