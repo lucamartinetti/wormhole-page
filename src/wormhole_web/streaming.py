@@ -101,7 +101,13 @@ class StreamingRequest(server.Request):
             return
 
         path_str = path.decode("utf-8", errors="replace")
-        if path_str != "/send":
+        # Match /send or /send/ or /send/<filename>
+        # curl -T file.tar.gz http://host/send/ sends PUT /send/file.tar.gz
+        if path_str == "/send":
+            url_filename = None
+        elif path_str.startswith("/send/"):
+            url_filename = path_str[len("/send/"):] or None
+        else:
             super().gotLength(length)
             return
 
@@ -153,11 +159,14 @@ class StreamingRequest(server.Request):
 
         self.notifyFinish().addErrback(on_disconnect)
 
-        # Get filename
+        # Get filename: header > URL path > "upload"
         raw_filename = self.requestHeaders.getRawHeaders(b"x-wormhole-filename")
-        filename = "upload"
         if raw_filename:
             filename = sanitize_filename(raw_filename[0].decode("utf-8", errors="replace"))
+        elif url_filename:
+            filename = sanitize_filename(url_filename)
+        else:
+            filename = "upload"
 
         # Fire background handler (do NOT yield)
         self._handle_inline_send(filename, filesize)

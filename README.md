@@ -7,7 +7,7 @@ HTTP gateway for [Magic Wormhole](https://magic-wormhole.readthedocs.io/). Send 
 ### Send a file
 
 ```bash
-curl -T myfile.tar.gz -H "X-Wormhole-Filename: myfile.tar.gz" http://localhost:8080/send
+curl -T myfile.tar.gz http://localhost:8080/send/
 ```
 
 Output:

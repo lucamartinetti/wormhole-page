@@ -5,3 +5,7 @@ dist/
 build/
 .venv/
 .superpowers/
+
+# Rust/WASM build artifacts
+crates/wormhole-wasm/target/
+crates/wormhole-wasm/pkg/

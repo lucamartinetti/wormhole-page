@@ -260,12 +260,99 @@ class ReceiveCodeResource(resource.Resource):
 # --- CLI entry point ---
 
 
+def start_transit_bridge(reactor, port, host="0.0.0.0",
+                         upstream_host="transit.magic-wormhole.io",
+                         upstream_port=4001):
+    """Start a WebSocket-to-TCP bridge for the public transit relay.
+
+    Browser clients connect via WebSocket to our server. We open a TCP
+    connection to the public transit relay and pipe bytes bidirectionally.
+    This means the CLI can use the default relay with no special flags.
+    """
+    from autobahn.twisted.websocket import (
+        WebSocketServerFactory,
+        WebSocketServerProtocol,
+    )
+    from twisted.internet import protocol as proto
+
+    class TCPRelayClient(proto.Protocol):
+        """TCP connection to the upstream transit relay."""
+
+        def connectionMade(self):
+            log.msg("transit bridge: TCP connected to upstream")
+            self.ws_proto = self.factory.ws_proto
+            # Flush any data buffered before TCP connected
+            for data in self.factory.pending:
+                self.transport.write(data)
+            self.factory.pending.clear()
+            self.factory.tcp_proto = self
+
+        def dataReceived(self, data):
+            # Upstream relay → browser (via WebSocket)
+            if self.ws_proto and self.ws_proto.state == self.ws_proto.STATE_OPEN:
+                self.ws_proto.sendMessage(data, isBinary=True)
+
+        def connectionLost(self, reason):
+            log.msg("transit bridge: TCP disconnected from upstream")
+            if self.ws_proto:
+                self.ws_proto.transport.loseConnection()
+
+    class TCPRelayClientFactory(proto.ClientFactory):
+        protocol = TCPRelayClient
+
+        def __init__(self, ws_proto):
+            self.ws_proto = ws_proto
+            self.tcp_proto = None
+            self.pending = []
+
+        def clientConnectionFailed(self, connector, reason):
+            log.msg(f"transit bridge: TCP connection failed: {reason}")
+            if self.ws_proto:
+                self.ws_proto.sendClose(1011, "upstream relay unreachable")
+
+    class TransitBridgeProtocol(WebSocketServerProtocol):
+        """WebSocket endpoint that bridges to the TCP transit relay."""
+
+        def onOpen(self):
+            log.msg("transit bridge: browser WebSocket connected")
+            # Connect to upstream TCP relay
+            self._tcp_factory = TCPRelayClientFactory(self)
+            reactor.connectTCP(upstream_host, upstream_port, self._tcp_factory)
+
+        def onMessage(self, payload, isBinary):
+            # Browser → upstream relay (via TCP)
+            if self._tcp_factory.tcp_proto:
+                self._tcp_factory.tcp_proto.transport.write(payload)
+            else:
+                # TCP not connected yet, buffer
+                self._tcp_factory.pending.append(payload)
+
+        def onClose(self, wasClean, code, reason):
+            log.msg("transit bridge: browser WebSocket disconnected")
+            if hasattr(self, '_tcp_factory') and self._tcp_factory.tcp_proto:
+                self._tcp_factory.tcp_proto.transport.loseConnection()
+
+    ws_url = f"ws://localhost:{port}"
+    ws_factory = WebSocketServerFactory(ws_url)
+    ws_factory.protocol = TransitBridgeProtocol
+
+    ep = endpoints.TCP4ServerEndpoint(reactor, port, interface=host)
+    d = ep.listen(ws_factory)
+    d.addCallback(lambda _: log.msg(
+        f"transit bridge (WS→TCP) listening on :{port}, "
+        f"upstream {upstream_host}:{upstream_port}"
+    ))
+    d.addErrback(lambda f: log.msg(f"transit bridge FAILED to start: {f}"))
+
+
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Wormhole Web — HTTP gateway")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--transit-port", type=int, default=4002,
+                        help="Port for WebSocket transit relay (default: 4002)")
     parser.add_argument(
         "--transfer-timeout", type=int, default=DEFAULT_TRANSFER_TIMEOUT
     )
@@ -294,6 +381,10 @@ def main():
     endpoint = endpoints.TCP4ServerEndpoint(default_reactor, args.port, interface=args.host)
     endpoint.listen(site)
     print(f"wormhole-web listening on :{args.port}")
+
+    # Start WebSocket-to-TCP bridge for browser transit connections
+    start_transit_bridge(default_reactor, args.transit_port, args.host)
+
     default_reactor.run()
 
 
