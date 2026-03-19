@@ -433,9 +433,15 @@ impl WormholeReceiver {
         .map_err(|e| JsError::new(&format!("Receive failed: {e}")))?
         .ok_or_else(|| JsError::new("Transfer cancelled"))?;
 
+        let fname = req.file_name();
+        let fsize = req.file_size();
+        web_sys::console::log_1(
+            &format!("[wormhole] file offer: name={fname}, size={fsize}").into(),
+        );
+
         let offer = FileOffer {
-            filename: req.file_name(),
-            filesize: req.file_size(),
+            filename: fname,
+            filesize: fsize,
         };
 
         self.receive_request = Some(req);
@@ -459,21 +465,37 @@ impl WormholeReceiver {
         let (done_tx, done_rx) = oneshot::channel();
 
         wasm_bindgen_futures::spawn_local(async move {
+            web_sys::console::log_1(&"[wormhole] receive task: accepting file...".into());
             let result = req
                 .accept(
                     |info: TransitInfo| {
-                        let _ct = match info.conn_type {
+                        let ct = match info.conn_type {
                             ConnectionType::Direct => "direct",
                             ConnectionType::Relay { .. } => "relayed",
                             _ => "unknown",
                         };
+                        web_sys::console::log_1(
+                            &format!("[wormhole] receive task: transit connected ({ct})").into(),
+                        );
                     },
-                    |_received, _total| {},
+                    |received, total| {
+                        if received % (256 * 1024) < 65536 {
+                            web_sys::console::log_1(
+                                &format!("[wormhole] receive task: {received}/{total} bytes").into(),
+                            );
+                        }
+                    },
                     &mut writer,
                     futures::future::pending(),
                 )
                 .await;
 
+            match &result {
+                Ok(()) => web_sys::console::log_1(&"[wormhole] receive task: complete".into()),
+                Err(e) => web_sys::console::log_1(
+                    &format!("[wormhole] receive task ERROR: {e}").into(),
+                ),
+            }
             let _ = done_tx.send(result.map_err(|e| e.to_string()));
         });
 

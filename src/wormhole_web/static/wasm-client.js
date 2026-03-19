@@ -165,7 +165,6 @@ async function wasmReceive(code, callbacks) {
     }
 
     let received = 0;
-    console.log('[wormhole] JS: starting receive loop');
     while (true) {
       const chunk = await receiver.receive_chunk();
       if (chunk.length === 0) break;
