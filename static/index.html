@@ -49,10 +49,16 @@
   <div id="panel-send" role="tabpanel" aria-labelledby="main-tab-send">
     <!-- Send: initial state -->
     <div id="send-initial">
-      <div class="dropzone" id="dropzone" onclick="document.getElementById('file-input').click()" role="button" tabindex="0" aria-label="Drop a file here or click to browse">
-        Drop a file here or click to browse
-        <input type="file" id="file-input" accept="*/*" aria-label="Select file to send">
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Drop files here or click to browse">
+        Drop files here or click to browse
+        <div class="dropzone-hint">You can also drop folders</div>
+        <input type="file" id="file-input" multiple accept="*/*" aria-label="Select files to send">
+        <input type="file" id="folder-input" webkitdirectory aria-label="Select folder to send" style="display:none">
       </div>
+      <button class="btn-folder" id="btn-folder" onclick="document.getElementById('folder-input').click()" aria-label="Select a folder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+        Send a folder
+      </button>
     </div>
 
     <!-- Send: status state -->
@@ -303,22 +309,34 @@ function shareCode() {
 }
 
 // --- Send ---
-function startSend(file) {
+// Accepts a single File or an array of Files
+function startSend(fileOrFiles) {
   if (!window.wasmClient || !window.wasmClient.ready) {
     // WASM not loaded -- can't proceed
     return;
   }
   // Clean up any previous send to avoid leaking relay connections
   window.wasmClient.cancelSend();
-  startSendWasm(file);
+  var files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  if (files.length === 0) return;
+  startSendWasm(files.length === 1 ? files[0] : files);
 }
 
-function startSendWasm(file) {
+function startSendWasm(fileOrFiles) {
   hide('send-initial');
   show('send-status');
 
-  document.getElementById('send-filename').textContent = file.name;
-  document.getElementById('send-filesize').textContent = formatSize(file.size);
+  var files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  var isMulti = files.length > 1;
+
+  if (isMulti) {
+    var totalSize = files.reduce(function(sum, f) { return sum + f.size; }, 0);
+    document.getElementById('send-filename').textContent = files.length + ' files';
+    document.getElementById('send-filesize').textContent = formatSize(totalSize) + ' total (will be sent as zip)';
+  } else {
+    document.getElementById('send-filename').textContent = files[0].name;
+    document.getElementById('send-filesize').textContent = formatSize(files[0].size);
+  }
   document.getElementById('send-status-text').textContent = 'allocating code...';
   document.getElementById('send-status-text').className = 'status-text';
   document.getElementById('send-progress').style.width = '0%';
@@ -333,7 +351,7 @@ function startSendWasm(file) {
 
   document.getElementById('send-status-text').focus();
 
-  window.wasmClient.send(file, {
+  window.wasmClient.send(fileOrFiles, {
     onCode(code) {
       currentCode = code;
       show('send-code-section');
@@ -399,6 +417,7 @@ function cancelSend() {
   hide('send-status');
   show('send-initial');
   document.getElementById('file-input').value = '';
+  document.getElementById('folder-input').value = '';
   // Reset button
   var btn = document.getElementById('send-cancel-btn');
   btn.textContent = 'Cancel';
@@ -444,7 +463,11 @@ function startReceiveWasm(code) {
   window.wasmClient.receive(code, {
     onFileInfo(filename, filesize) {
       document.getElementById('receive-filename').textContent = filename;
-      document.getElementById('receive-filesize').textContent = formatSize(filesize);
+      var sizeText = formatSize(filesize);
+      if (filename.endsWith('.zip')) {
+        sizeText += ' (zip archive — extract after download)';
+      }
+      document.getElementById('receive-filesize').textContent = sizeText;
       show('receive-file-info');
       document.getElementById('receive-spinner').style.display = 'none';
     },
@@ -517,6 +540,12 @@ function cancelReceive() {
 // --- Drag and drop ---
 var dz = document.getElementById('dropzone');
 
+dz.addEventListener('click', function(e) {
+  if (e.target.id !== 'file-input' && e.target.id !== 'folder-input') {
+    document.getElementById('file-input').click();
+  }
+});
+
 dz.addEventListener('dragover', function(e) {
   e.preventDefault();
   dz.classList.add('dragover');
@@ -529,8 +558,25 @@ dz.addEventListener('dragleave', function() {
 dz.addEventListener('drop', function(e) {
   e.preventDefault();
   dz.classList.remove('dragover');
-  if (e.dataTransfer.files.length > 0) {
-    startSend(e.dataTransfer.files[0]);
+  var items = e.dataTransfer.items;
+  // Check if any item is a directory (use webkitGetAsEntry for folder detection)
+  var hasEntries = items && items.length > 0 && items[0].webkitGetAsEntry;
+  if (hasEntries) {
+    // Use entry API to traverse directories
+    window.wasmClient.traverseEntries(items).then(function(files) {
+      if (files.length > 0) {
+        startSend(files.length === 1 ? files[0] : files);
+      }
+    }).catch(function() {
+      // Fallback to flat file list
+      var files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        startSend(files.length === 1 ? files[0] : files);
+      }
+    });
+  } else if (e.dataTransfer.files.length > 0) {
+    var files = Array.from(e.dataTransfer.files);
+    startSend(files.length === 1 ? files[0] : files);
   }
 });
 
@@ -543,7 +589,14 @@ dz.addEventListener('keydown', function(e) {
 
 document.getElementById('file-input').addEventListener('change', function() {
   if (this.files.length > 0) {
-    startSend(this.files[0]);
+    var files = Array.from(this.files);
+    startSend(files.length === 1 ? files[0] : files);
+  }
+});
+
+document.getElementById('folder-input').addEventListener('change', function() {
+  if (this.files.length > 0) {
+    startSend(Array.from(this.files));
   }
 });
 
