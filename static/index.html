@@ -521,6 +521,10 @@ function startReceiveWasm(code) {
 function cancelReceive() {
   if (window.wasmClient) window.wasmClient.cancelReceive();
   transferActive = false;
+  // If on a /receive/<code> URL, redirect to clean root
+  if (window.location.pathname.match(/^\/receive\/.+$/)) {
+    window.history.replaceState(null, '', '/');
+  }
   hide('receive-status');
   show('receive-initial');
   // Reset button

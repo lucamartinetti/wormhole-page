@@ -1,4 +1,4 @@
-const CACHE_NAME = 'wormhole-v5';
+const CACHE_NAME = 'wormhole-v6';
 const SHELL_ASSETS = [
   '/',
   '/static/index.html',
