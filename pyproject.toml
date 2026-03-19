@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "HTTP gateway for Magic Wormhole"
 requires-python = ">=3.12"
 dependencies = [
+    "autobahn",
     "magic-wormhole",
-    "magic-wormhole-transit-relay",
     "twisted[tls]",
     "uhashring",
 ]

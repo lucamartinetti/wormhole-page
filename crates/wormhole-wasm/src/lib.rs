@@ -17,11 +17,22 @@ fn app_config() -> AppConfig<AppVersion> {
     transfer::APP_CONFIG.clone()
 }
 
-fn relay_hints(transit_relay_url: &str) -> Vec<transit::RelayHint> {
+/// Default public transit relay (TCP). The CLI peer will connect here directly.
+const PUBLIC_TRANSIT_RELAY: &str = "tcp://transit.magic-wormhole.io:4001";
+
+fn relay_hints(bridge_url: &str) -> Vec<transit::RelayHint> {
+    // The browser connects to our WebSocket bridge, which forwards to
+    // the public TCP relay. We advertise BOTH URLs so:
+    // - Our WASM code uses the ws:// bridge URL
+    // - The CLI peer uses the tcp:// public URL
+    // Both end up at the same upstream relay.
     vec![
         transit::RelayHint::from_urls(
             None,
-            [transit_relay_url.parse().unwrap()],
+            [
+                bridge_url.parse().unwrap(),
+                PUBLIC_TRANSIT_RELAY.parse().unwrap(),
+            ],
         )
         .unwrap(),
     ]
@@ -254,6 +265,7 @@ impl WormholeSender {
         let conn_type_tx2 = conn_type_tx.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
+            web_sys::console::log_1(&"[wormhole] send task: starting send_file...".into());
             let result = transfer::send_file(
                 wormhole,
                 relay,
@@ -267,13 +279,24 @@ impl WormholeSender {
                         ConnectionType::Relay { .. } => "relayed".to_string(),
                         _ => "unknown".to_string(),
                     };
+                    web_sys::console::log_1(&format!("[wormhole] transit connected: {ct}").into());
                     *conn_type_tx2.lock().unwrap() = Some(ct);
                 },
-                |_sent, _total| {},
+                |sent, total| {
+                    if sent % (1024 * 1024) < 65536 {
+                        web_sys::console::log_1(
+                            &format!("[wormhole] progress: {sent}/{total}").into(),
+                        );
+                    }
+                },
                 futures::future::pending(),
             )
             .await;
 
+            match &result {
+                Ok(()) => web_sys::console::log_1(&"[wormhole] send task: complete".into()),
+                Err(e) => web_sys::console::log_1(&format!("[wormhole] send task ERROR: {e}").into()),
+            }
             let _ = done_tx.send(result.map_err(|e| e.to_string()));
         });
 
