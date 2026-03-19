@@ -15,7 +15,7 @@ test.describe('Page load', () => {
     await page.goto('/');
     const dropzone = page.locator('#dropzone');
     await expect(dropzone).toBeVisible();
-    await expect(dropzone).toContainText('Drop a file here or click to browse');
+    await expect(dropzone).toContainText('Drop files here or click to browse');
   });
 
   test('receive code input is visible after switching to Receive tab', async ({ page }) => {
