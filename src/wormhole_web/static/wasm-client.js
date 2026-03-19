@@ -205,7 +205,8 @@ async function wasmReceive(code, callbacks) {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Delay revoke — Firefox needs time to start reading the Blob
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
 
     onComplete();
