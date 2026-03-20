@@ -4,6 +4,7 @@ const SHELL_ASSETS = [
   '/static/index.html',
   '/static/style.css',
   '/static/wasm-client.js',
+  '/static/app.js',
   '/static/qr.js',
   '/static/wasm/wormhole_wasm.js',
   '/static/wasm/wormhole_wasm_bg.wasm',
