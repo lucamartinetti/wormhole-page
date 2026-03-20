@@ -451,3 +451,17 @@ if (window.wasmClient) {
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
+
+// --- Event Listeners (replacing inline handlers for CSP compliance) ---
+document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+document.getElementById('main-tab-send').addEventListener('click', function() { switchTab('send'); });
+document.getElementById('main-tab-receive').addEventListener('click', function() { switchTab('receive'); });
+document.getElementById('btn-folder').addEventListener('click', function() { document.getElementById('folder-input').click(); });
+document.getElementById('btn-copy').addEventListener('click', copyCode);
+document.getElementById('btn-share').addEventListener('click', shareCode);
+document.getElementById('tab-web').addEventListener('click', function() { setQrMode(true); });
+document.getElementById('tab-wormhole').addEventListener('click', function() { setQrMode(false); });
+document.getElementById('send-cancel-btn').addEventListener('click', cancelSend);
+document.getElementById('receive-code').addEventListener('keydown', function(e) { if (e.key === 'Enter') startReceive(); });
+document.getElementById('receive-btn').addEventListener('click', startReceive);
+document.getElementById('receive-cancel-btn').addEventListener('click', cancelReceive);
