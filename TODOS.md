@@ -20,6 +20,15 @@ tries to close tab or navigate away. Prevents accidental transfer abort.
 - Effort: S
 - Depends on: WASM E2E encryption
 
+## P3: Streaming age encryption for files >100MB
+Store mode currently caps at 100MB because age-encryption JS loads the entire
+file into memory for encryption. To support larger files, need streaming
+encryption (age format supports 64KB authenticated chunks natively). Requires
+either a ReadableStream-based API in the age-encryption JS lib, or switching
+to rage compiled to WASM.
+- Effort: M
+- Depends on: Store feature (must ship first)
+
 ## P2: Replace vendored wormhole-rs with git fork
 `crates/magic-wormhole-patched/` is 18,000 lines of vendored upstream for a
 3-line `#[cfg(not(target_family = "wasm"))]` patch on `std::time::Instant`.

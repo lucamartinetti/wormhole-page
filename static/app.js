@@ -474,6 +474,170 @@ if (window.wasmClient) {
   }
 })();
 
+// --- Store Mode ---
+
+function switchSendMode(mode) {
+  var liveTab = document.getElementById('send-mode-live');
+  var storeTab = document.getElementById('send-mode-store');
+  var liveInitial = document.getElementById('send-initial');
+  var liveStatus = document.getElementById('send-status');
+  var storeInitial = document.getElementById('store-send-initial');
+  var storeStatus = document.getElementById('store-send-status');
+
+  if (mode === 'live') {
+    liveTab.classList.add('active');
+    liveTab.setAttribute('aria-selected', 'true');
+    storeTab.classList.remove('active');
+    storeTab.setAttribute('aria-selected', 'false');
+    liveInitial.classList.remove('hidden');
+    storeInitial.classList.add('hidden');
+    storeStatus.classList.add('hidden');
+  } else {
+    storeTab.classList.add('active');
+    storeTab.setAttribute('aria-selected', 'true');
+    liveTab.classList.remove('active');
+    liveTab.setAttribute('aria-selected', 'false');
+    liveInitial.classList.add('hidden');
+    liveStatus.classList.add('hidden');
+    storeInitial.classList.remove('hidden');
+  }
+}
+
+function switchRecvMode(mode) {
+  var liveTab = document.getElementById('recv-mode-live');
+  var storeTab = document.getElementById('recv-mode-store');
+  var liveInitial = document.getElementById('receive-initial');
+  var liveStatus = document.getElementById('receive-status');
+  var storeInitial = document.getElementById('store-receive-initial');
+  var storeStatus = document.getElementById('store-receive-status');
+
+  if (mode === 'live') {
+    liveTab.classList.add('active');
+    liveTab.setAttribute('aria-selected', 'true');
+    storeTab.classList.remove('active');
+    storeTab.setAttribute('aria-selected', 'false');
+    liveInitial.classList.remove('hidden');
+    storeInitial.classList.add('hidden');
+    storeStatus.classList.add('hidden');
+  } else {
+    storeTab.classList.add('active');
+    storeTab.setAttribute('aria-selected', 'true');
+    liveTab.classList.remove('active');
+    liveTab.setAttribute('aria-selected', 'false');
+    liveInitial.classList.add('hidden');
+    liveStatus.classList.add('hidden');
+    storeInitial.classList.remove('hidden');
+  }
+}
+
+function startStoreSend(file) {
+  if (!window.storeClient) {
+    alert('Store mode is loading. Please wait a moment and try again.');
+    return;
+  }
+  if (file.size > 100 * 1024 * 1024) {
+    alert('File is too large (max 100 MB). Use Send Live for larger files.');
+    return;
+  }
+
+  hide('store-send-initial');
+  show('store-send-status');
+  hide('store-code-section');
+  document.getElementById('store-send-filename').textContent = file.name;
+  document.getElementById('store-send-filesize').textContent = formatSize(file.size);
+  document.getElementById('store-send-new-btn').style.display = 'none';
+  transferActive = true;
+
+  window.storeClient.encryptAndUpload(file, {
+    onStatus: function(text) {
+      document.getElementById('store-send-status-text').textContent = text;
+      document.getElementById('store-send-status-text').className = 'status-text';
+    },
+    onProgress: function(pct) {
+      var bar = document.getElementById('store-send-progress');
+      bar.style.width = pct + '%';
+      bar.setAttribute('aria-valuenow', pct);
+      if (pct >= 100) bar.classList.add('done');
+    },
+    onError: function(msg) {
+      document.getElementById('store-send-status-text').textContent = msg;
+      document.getElementById('store-send-status-text').className = 'status-text error';
+      document.getElementById('store-send-new-btn').style.display = '';
+      transferActive = false;
+    },
+    onComplete: function(passphrase, shareUrl) {
+      document.getElementById('store-passphrase').textContent = passphrase.replace(/-/g, '  ');
+      show('store-code-section');
+      document.getElementById('store-send-status-text').textContent = 'File stored. Share the code or link.';
+      document.getElementById('store-send-status-text').className = 'status-text done';
+      document.getElementById('store-send-new-btn').style.display = '';
+      transferActive = false;
+      // Render QR code for share URL
+      if (typeof qrcode !== 'undefined') {
+        var container = document.getElementById('store-qr-display');
+        container.innerHTML = '';
+        var qr = qrcode(0, 'M');
+        qr.addData(shareUrl, 'Byte');
+        qr.make();
+        container.innerHTML = qr.createSvgTag(6, 0);
+      }
+      // Store share URL for copy buttons
+      document.getElementById('store-btn-copy-link').dataset.url = shareUrl;
+      document.getElementById('store-btn-copy-code').dataset.code = passphrase;
+      track('store-send', { size: sizeBucket(file.size) });
+    }
+  });
+}
+
+function startStoreReceive() {
+  if (!window.storeClient) {
+    alert('Store mode is loading. Please wait a moment and try again.');
+    return;
+  }
+  var input = document.getElementById('store-receive-code');
+  var passphrase = input.value.trim();
+  if (!passphrase) return;
+
+  hide('store-receive-initial');
+  show('store-receive-status');
+  hide('store-receive-file-info');
+  document.getElementById('store-receive-new-btn').style.display = 'none';
+  transferActive = true;
+
+  window.storeClient.fetchAndDecrypt(passphrase, {
+    onStatus: function(text) {
+      document.getElementById('store-receive-status-text').textContent = text;
+      document.getElementById('store-receive-status-text').className = 'status-text';
+    },
+    onProgress: function(pct) {
+      var bar = document.getElementById('store-receive-progress');
+      bar.style.width = pct + '%';
+      bar.setAttribute('aria-valuenow', pct);
+      if (pct >= 100) bar.classList.add('done');
+    },
+    onError: function(msg) {
+      document.getElementById('store-receive-status-text').textContent = msg;
+      document.getElementById('store-receive-status-text').className = 'status-text error';
+      document.getElementById('store-receive-new-btn').style.display = '';
+      transferActive = false;
+    },
+    onMeta: function(size) {
+      show('store-receive-file-info');
+      document.getElementById('store-receive-filesize').textContent = formatSize(size) + ' (encrypted)';
+    },
+    onComplete: function(filename, size) {
+      document.getElementById('store-receive-filename').textContent = filename;
+      document.getElementById('store-receive-filesize').textContent = formatSize(size);
+      show('store-receive-file-info');
+      document.getElementById('store-receive-status-text').textContent = 'File decrypted and saved.';
+      document.getElementById('store-receive-status-text').className = 'status-text done';
+      document.getElementById('store-receive-new-btn').style.display = '';
+      transferActive = false;
+      track('store-receive', { size: sizeBucket(size) });
+    }
+  });
+}
+
 // --- Service Worker Registration ---
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -492,3 +656,93 @@ document.getElementById('send-cancel-btn').addEventListener('click', cancelSend)
 document.getElementById('receive-code').addEventListener('keydown', function(e) { if (e.key === 'Enter') startReceive(); });
 document.getElementById('receive-btn').addEventListener('click', startReceive);
 document.getElementById('receive-cancel-btn').addEventListener('click', cancelReceive);
+
+// Store mode tabs
+document.getElementById('send-mode-live').addEventListener('click', function() { switchSendMode('live'); });
+document.getElementById('send-mode-store').addEventListener('click', function() { switchSendMode('store'); });
+document.getElementById('recv-mode-live').addEventListener('click', function() { switchRecvMode('live'); });
+document.getElementById('recv-mode-store').addEventListener('click', function() { switchRecvMode('store'); });
+
+// Store send: file input + dropzone
+document.getElementById('store-dropzone').addEventListener('click', function() {
+  document.getElementById('store-file-input').click();
+});
+document.getElementById('store-dropzone').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); document.getElementById('store-file-input').click(); }
+});
+document.getElementById('store-file-input').addEventListener('change', function() {
+  if (this.files.length > 0) startStoreSend(this.files[0]);
+});
+document.getElementById('store-dropzone').addEventListener('dragover', function(e) {
+  e.preventDefault(); this.classList.add('dragover');
+});
+document.getElementById('store-dropzone').addEventListener('dragleave', function() {
+  this.classList.remove('dragover');
+});
+document.getElementById('store-dropzone').addEventListener('drop', function(e) {
+  e.preventDefault(); this.classList.remove('dragover');
+  if (e.dataTransfer.files.length > 0) startStoreSend(e.dataTransfer.files[0]);
+});
+
+// Store send: copy buttons
+document.getElementById('store-btn-copy-link').addEventListener('click', function() {
+  var url = this.dataset.url;
+  if (url) {
+    navigator.clipboard.writeText(url);
+    document.getElementById('store-copy-link-label').textContent = 'Copied!';
+    setTimeout(function() { document.getElementById('store-copy-link-label').textContent = 'Copy Link'; }, 2000);
+  }
+});
+document.getElementById('store-btn-copy-code').addEventListener('click', function() {
+  var code = this.dataset.code;
+  if (code) {
+    navigator.clipboard.writeText(code);
+    document.getElementById('store-copy-code-label').textContent = 'Copied!';
+    setTimeout(function() { document.getElementById('store-copy-code-label').textContent = 'Copy Code'; }, 2000);
+  }
+});
+
+// Store send: new button
+document.getElementById('store-send-new-btn').addEventListener('click', function() {
+  hide('store-send-status');
+  show('store-send-initial');
+  document.getElementById('store-send-progress').style.width = '0%';
+  document.getElementById('store-send-progress').classList.remove('done');
+  document.getElementById('store-file-input').value = '';
+});
+
+// Store receive: start
+document.getElementById('store-receive-btn').addEventListener('click', startStoreReceive);
+document.getElementById('store-receive-code').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') startStoreReceive();
+});
+
+// Store receive: new button
+document.getElementById('store-receive-new-btn').addEventListener('click', function() {
+  hide('store-receive-status');
+  show('store-receive-initial');
+  document.getElementById('store-receive-progress').style.width = '0%';
+  document.getElementById('store-receive-progress').classList.remove('done');
+  document.getElementById('store-receive-code').value = '';
+});
+
+// Auto-detect /store#passphrase URL
+(function() {
+  if (window.location.pathname === '/store' && window.location.hash.length > 1) {
+    var passphrase = decodeURIComponent(window.location.hash.slice(1));
+    switchTab('receive');
+    switchRecvMode('store');
+    document.getElementById('store-receive-code').value = passphrase;
+    // Wait for store-client.js module to load, then start
+    var attempts = 0;
+    var tryStart = function() {
+      if (window.storeClient) {
+        startStoreReceive();
+      } else if (attempts < 50) {
+        attempts++;
+        setTimeout(tryStart, 100);
+      }
+    };
+    tryStart();
+  }
+})();
