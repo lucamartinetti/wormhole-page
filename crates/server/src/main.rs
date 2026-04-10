@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{
-        State,
+        ConnectInfo, Path, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{StatusCode, header::{HeaderName, HeaderValue}},
@@ -10,7 +10,7 @@ use axum::{
 };
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, net::{IpAddr, SocketAddr}, path::PathBuf, sync::Arc, time::Duration};
 use tokio::net::TcpStream;
 use tower_http::services::ServeDir;
 
@@ -32,6 +32,26 @@ struct Args {
         env = "TRANSIT_RELAY"
     )]
     transit_relay: String,
+
+    /// S3 bucket for encrypted blob store
+    #[arg(long, env = "S3_BUCKET")]
+    s3_bucket: Option<String>,
+
+    /// S3-compatible endpoint URL
+    #[arg(long, env = "S3_ENDPOINT")]
+    s3_endpoint: Option<String>,
+
+    /// S3 region
+    #[arg(long, env = "S3_REGION", default_value = "auto")]
+    s3_region: String,
+
+    /// Maximum blob size in bytes (default 100MB)
+    #[arg(long, env = "STORE_MAX_SIZE", default_value = "104857600")]
+    store_max_size: u64,
+
+    /// Blob TTL in hours
+    #[arg(long, env = "STORE_TTL_HOURS", default_value = "24")]
+    store_ttl_hours: u64,
 }
 
 #[derive(Clone)]
@@ -40,6 +60,11 @@ struct AppState {
     service_worker: Arc<String>,
     transit_relay: Arc<String>,
     http_client: reqwest::Client,
+    s3_client: Option<aws_sdk_s3::Client>,
+    s3_bucket: Option<String>,
+    store_max_size: u64,
+    store_ttl_hours: u64,
+    rate_limits: Arc<tokio::sync::Mutex<HashMap<IpAddr, Vec<std::time::Instant>>>>,
 }
 
 #[tokio::main]
@@ -69,11 +94,37 @@ async fn main() {
         .build()
         .expect("failed to build HTTP client");
 
+    // Conditionally init S3 client
+    let s3_client = if let Some(ref endpoint) = args.s3_endpoint {
+        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .endpoint_url(endpoint)
+            .region(aws_config::Region::new(args.s3_region.clone()))
+            .load()
+            .await;
+        Some(aws_sdk_s3::Client::new(&config))
+    } else {
+        None
+    };
+
+    if s3_client.is_some() {
+        tracing::info!("S3 store enabled (bucket: {:?})", args.s3_bucket);
+    } else {
+        tracing::info!("S3 store not configured (no S3_ENDPOINT)");
+    }
+
+    let rate_limits: Arc<tokio::sync::Mutex<HashMap<IpAddr, Vec<std::time::Instant>>>> =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
     let state = AppState {
         index_html: Arc::new(index_html),
         service_worker: Arc::new(service_worker),
         transit_relay: Arc::new(transit_relay.clone()),
         http_client,
+        s3_client: s3_client.clone(),
+        s3_bucket: args.s3_bucket.clone(),
+        store_max_size: args.store_max_size,
+        store_ttl_hours: args.store_ttl_hours,
+        rate_limits: rate_limits.clone(),
     };
 
     // Static file service
@@ -85,6 +136,9 @@ async fn main() {
         .route("/transit", axum::routing::get(transit_ws))
         .route("/a/script.js", axum::routing::get(analytics_script))
         .route("/a/api/send", axum::routing::post(analytics_event))
+        .route("/api/store/{blob_id}", axum::routing::post(store_upload).get(store_download))
+        .route("/api/store/{blob_id}/meta", axum::routing::get(store_meta))
+        .route("/store", axum::routing::get(spa_fallback))
         // SPA fallback: /receive/<code> serves index.html
         .route("/receive/{code}", axum::routing::get(spa_fallback))
         // Static files under /static/
@@ -94,12 +148,37 @@ async fn main() {
         .layer(axum::middleware::from_fn(security_headers))
         .with_state(state);
 
+    // Spawn hourly cleanup task for expired blobs
+    if let (Some(client), Some(bucket)) = (s3_client, args.s3_bucket) {
+        let ttl_hours = args.store_ttl_hours;
+        let rl = rate_limits;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                cleanup_expired_blobs(&client, &bucket, ttl_hours).await;
+                // Prune stale rate limiter entries
+                let now = std::time::Instant::now();
+                let mut limits = rl.lock().await;
+                limits.retain(|_ip, timestamps| {
+                    timestamps.retain(|t| now.duration_since(*t) < Duration::from_secs(3600));
+                    !timestamps.is_empty()
+                });
+            }
+        });
+    }
+
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     tracing::info!("wormhole.page listening on {addr}");
     tracing::info!("transit bridge → {transit_relay}");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 /// Middleware that adds security headers to every response.
@@ -408,4 +487,480 @@ async fn handle_transit(ws: WebSocket, relay_addr: Arc<String>) {
         ws_bytes,
         tcp_bytes,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Store (async file drop) endpoints
+// ---------------------------------------------------------------------------
+
+/// Validate that a blob_id is exactly 64 hex characters.
+fn is_valid_blob_id(id: &str) -> bool {
+    id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Extract client IP from Fly-Client-IP header, falling back to peer address.
+fn client_ip(
+    headers: &axum::http::HeaderMap,
+    connect_info: &ConnectInfo<SocketAddr>,
+) -> IpAddr {
+    headers
+        .get("fly-client-ip")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<IpAddr>().ok())
+        .unwrap_or_else(|| connect_info.0.ip())
+}
+
+/// Sliding-window rate limiter. Returns true if the request is allowed.
+async fn check_rate_limit(
+    rate_limits: &tokio::sync::Mutex<HashMap<IpAddr, Vec<std::time::Instant>>>,
+    ip: IpAddr,
+    max_per_hour: usize,
+) -> bool {
+    let now = std::time::Instant::now();
+    let mut limits = rate_limits.lock().await;
+    let timestamps = limits.entry(ip).or_default();
+    timestamps.retain(|t| now.duration_since(*t) < Duration::from_secs(3600));
+    if timestamps.len() >= max_per_hour {
+        return false;
+    }
+    timestamps.push(now);
+    true
+}
+
+/// S3 key for a blob.
+fn blob_key(blob_id: &str) -> String {
+    format!("drops/{blob_id}")
+}
+
+/// Check expiry / claimed-at metadata. Returns None if the blob is still valid,
+/// or Some(status) if it should be treated as gone.
+fn check_blob_expiry(
+    metadata: &HashMap<String, String>,
+) -> Option<StatusCode> {
+    let now = chrono::Utc::now();
+
+    if let Some(expires_at) = metadata.get("expires-at") {
+        if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(expires_at) {
+            if now > exp {
+                return Some(StatusCode::GONE);
+            }
+        }
+    }
+
+    if let Some(claimed_at) = metadata.get("claimed-at") {
+        if let Ok(claimed) = chrono::DateTime::parse_from_rfc3339(claimed_at) {
+            if now > claimed + chrono::Duration::minutes(5) {
+                return Some(StatusCode::GONE);
+            }
+        }
+    }
+
+    None
+}
+
+/// Helper to get S3 client + bucket or return 503.
+fn require_s3(state: &AppState) -> Result<(&aws_sdk_s3::Client, &str), impl IntoResponse> {
+    match (&state.s3_client, &state.s3_bucket) {
+        (Some(client), Some(bucket)) => Ok((client, bucket.as_str())),
+        _ => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({"error": "store not configured"})),
+        )),
+    }
+}
+
+/// POST /api/store/{blob_id} — Upload encrypted blob
+async fn store_upload(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(blob_id): Path<String>,
+    req: axum::http::Request<Body>,
+) -> impl IntoResponse {
+    if !is_valid_blob_id(&blob_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "invalid blob_id"})),
+        )
+            .into_response();
+    }
+
+    let ip = client_ip(req.headers(), &ConnectInfo(addr));
+
+    if !check_rate_limit(&state.rate_limits, ip, 10).await {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(serde_json::json!({"error": "rate limit exceeded"})),
+        )
+            .into_response();
+    }
+
+    // Content-Length required
+    let content_length = match req.headers().get("content-length") {
+        Some(v) => match v.to_str().ok().and_then(|s| s.parse::<u64>().ok()) {
+            Some(len) => len,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({"error": "invalid content-length"})),
+                )
+                    .into_response()
+            }
+        },
+        None => {
+            return (
+                StatusCode::LENGTH_REQUIRED,
+                axum::Json(serde_json::json!({"error": "content-length required"})),
+            )
+                .into_response()
+        }
+    };
+
+    if content_length > state.store_max_size {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            axum::Json(serde_json::json!({"error": "blob too large"})),
+        )
+            .into_response();
+    }
+
+    let (client, bucket) = match require_s3(&state) {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let key = blob_key(&blob_id);
+
+    // Check if blob already exists
+    match client.head_object().bucket(bucket).key(&key).send().await {
+        Ok(_) => {
+            return (
+                StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({"error": "blob already exists"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            // Only 404/NoSuchKey is expected; other errors are real failures
+            let is_not_found = e
+                .as_service_error()
+                .map(|se| se.is_not_found())
+                .unwrap_or(false);
+            if !is_not_found {
+                tracing::warn!("store: HEAD check failed: {e}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": "storage error"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let now = chrono::Utc::now();
+    let expires_at = now + chrono::Duration::hours(state.store_ttl_hours as i64);
+    let created_at_str = now.to_rfc3339();
+    let expires_at_str = expires_at.to_rfc3339();
+
+    // Collect request body and upload to S3
+    let body_bytes = match axum::body::to_bytes(req.into_body(), state.store_max_size as usize).await {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                axum::Json(serde_json::json!({"error": "body too large"})),
+            )
+                .into_response()
+        }
+    };
+    let byte_stream = aws_sdk_s3::primitives::ByteStream::from(body_bytes.to_vec());
+
+    match client
+        .put_object()
+        .bucket(bucket)
+        .key(&key)
+        .content_length(content_length as i64)
+        .metadata("created-at", &created_at_str)
+        .metadata("expires-at", &expires_at_str)
+        .body(byte_stream)
+        .send()
+        .await
+    {
+        Ok(_) => (
+            StatusCode::CREATED,
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "expires_at": expires_at_str,
+            })),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!("store: PutObject failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "upload failed"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GET /api/store/{blob_id}/meta — Check blob exists, get size
+async fn store_meta(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(blob_id): Path<String>,
+    req: axum::http::Request<Body>,
+) -> impl IntoResponse {
+    if !is_valid_blob_id(&blob_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "invalid blob_id"})),
+        )
+            .into_response();
+    }
+
+    let ip = client_ip(req.headers(), &ConnectInfo(addr));
+    if !check_rate_limit(&state.rate_limits, ip, 60).await {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(serde_json::json!({"error": "rate limit exceeded"})),
+        )
+            .into_response();
+    }
+
+    let (client, bucket) = match require_s3(&state) {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let key = blob_key(&blob_id);
+
+    let head = match client.head_object().bucket(bucket).key(&key).send().await {
+        Ok(h) => h,
+        Err(e) => {
+            let is_not_found = e
+                .as_service_error()
+                .map(|se| se.is_not_found())
+                .unwrap_or(false);
+            if is_not_found {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            tracing::warn!("store: HEAD failed: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let metadata = head.metadata().cloned().unwrap_or_default();
+    if let Some(status) = check_blob_expiry(&metadata) {
+        // Delete expired blob
+        let _ = client.delete_object().bucket(bucket).key(&key).send().await;
+        return status.into_response();
+    }
+
+    let size = head.content_length().unwrap_or(0);
+    let expires_at = metadata.get("expires-at").cloned().unwrap_or_default();
+
+    (
+        StatusCode::OK,
+        axum::Json(serde_json::json!({
+            "size": size,
+            "expires_at": expires_at,
+        })),
+    )
+        .into_response()
+}
+
+/// GET /api/store/{blob_id} — Download encrypted blob
+async fn store_download(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(blob_id): Path<String>,
+    req: axum::http::Request<Body>,
+) -> impl IntoResponse {
+    if !is_valid_blob_id(&blob_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "invalid blob_id"})),
+        )
+            .into_response();
+    }
+
+    let ip = client_ip(req.headers(), &ConnectInfo(addr));
+    if !check_rate_limit(&state.rate_limits, ip, 60).await {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(serde_json::json!({"error": "rate limit exceeded"})),
+        )
+            .into_response();
+    }
+
+    let (client, bucket) = match require_s3(&state) {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let key = blob_key(&blob_id);
+
+    // HEAD to check expiry and claimed status
+    let head = match client.head_object().bucket(bucket).key(&key).send().await {
+        Ok(h) => h,
+        Err(e) => {
+            let is_not_found = e
+                .as_service_error()
+                .map(|se| se.is_not_found())
+                .unwrap_or(false);
+            if is_not_found {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            tracing::warn!("store: HEAD failed: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let metadata = head.metadata().cloned().unwrap_or_default();
+    if let Some(status) = check_blob_expiry(&metadata) {
+        let _ = client.delete_object().bucket(bucket).key(&key).send().await;
+        return status.into_response();
+    }
+
+    // Mark as claimed if not already
+    if !metadata.contains_key("claimed-at") {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut new_metadata = metadata.clone();
+        new_metadata.insert("claimed-at".to_string(), now);
+
+        // CopyObject to self with updated metadata
+        let copy_source = format!("{bucket}/{key}");
+        if let Err(e) = client
+            .copy_object()
+            .bucket(bucket)
+            .key(&key)
+            .copy_source(&copy_source)
+            .metadata_directive(aws_sdk_s3::types::MetadataDirective::Replace)
+            .set_metadata(Some(new_metadata))
+            .send()
+            .await
+        {
+            tracing::warn!("store: CopyObject (claim) failed: {e}");
+            // Non-fatal: continue with download
+        }
+    }
+
+    // GetObject and stream to client
+    let get = match client.get_object().bucket(bucket).key(&key).send().await {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!("store: GetObject failed: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let content_length = get.content_length().unwrap_or(0);
+    let body_bytes = get.body.collect().await;
+    let body = match body_bytes {
+        Ok(aggregated) => Body::from(aggregated.into_bytes()),
+        Err(e) => {
+            tracing::warn!("store: failed to read S3 body: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        [
+            (
+                HeaderName::from_static("content-type"),
+                HeaderValue::from_static("application/octet-stream"),
+            ),
+            (
+                HeaderName::from_static("content-length"),
+                HeaderValue::from_str(&content_length.to_string()).unwrap(),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Cleanup expired blobs from S3.
+async fn cleanup_expired_blobs(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    ttl_hours: u64,
+) {
+    tracing::debug!("store: starting expired blob cleanup");
+    let now = chrono::Utc::now();
+    let mut continuation_token: Option<String> = None;
+    let mut deleted = 0u64;
+
+    loop {
+        let mut req = client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix("drops/");
+
+        if let Some(ref token) = continuation_token {
+            req = req.continuation_token(token);
+        }
+
+        let list = match req.send().await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!("store cleanup: ListObjectsV2 failed: {e}");
+                break;
+            }
+        };
+
+        for obj in list.contents() {
+            {
+                let key: &str = match obj.key() {
+                    Some(k) => k,
+                    None => continue,
+                };
+
+                // HEAD to read metadata
+                let head = match client.head_object().bucket(bucket).key(key).send().await {
+                    Ok(h) => h,
+                    Err(_) => continue,
+                };
+
+                let metadata = head.metadata().cloned().unwrap_or_default();
+                let mut should_delete = false;
+
+                // Check TTL expiry
+                if let Some(created_at) = metadata.get("created-at") {
+                    if let Ok(created) = chrono::DateTime::parse_from_rfc3339(created_at) {
+                        if now > created + chrono::Duration::hours(ttl_hours as i64) {
+                            should_delete = true;
+                        }
+                    }
+                }
+
+                // Check claimed expiry (5 minutes after claim)
+                if let Some(claimed_at) = metadata.get("claimed-at") {
+                    if let Ok(claimed) = chrono::DateTime::parse_from_rfc3339(claimed_at) {
+                        if now > claimed + chrono::Duration::minutes(5) {
+                            should_delete = true;
+                        }
+                    }
+                }
+
+                if should_delete {
+                    if let Err(e) = client.delete_object().bucket(bucket).key(key).send().await {
+                        tracing::warn!("store cleanup: delete failed: {e}");
+                    } else {
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+
+        if list.is_truncated() == Some(true) {
+            continuation_token = list.next_continuation_token().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+
+    tracing::debug!("store: cleanup finished, deleted {deleted} blobs");
 }

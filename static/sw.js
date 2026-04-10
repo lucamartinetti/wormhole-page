@@ -10,6 +10,9 @@ const SHELL_ASSETS = [
   '/static/wasm/wormhole_wasm_bg.wasm',
   '/static/manifest.json',
   '/static/favicon.svg',
+  '/static/store-client.js',
+  '/static/wordlist.js',
+  '/static/age.js',
 ];
 
 const OFFLINE_HTML = `<!DOCTYPE html>
@@ -58,6 +61,7 @@ self.addEventListener('fetch', (event) => {
   if (
     url.pathname === '/transit' ||
     url.pathname === '/health' ||
+    url.pathname.startsWith('/api/') ||
     event.request.headers.get('upgrade') === 'websocket'
   ) {
     return;
@@ -97,7 +101,7 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     fetch(event.request).catch(() => {
       // For receive pages, try serving cached root (SPA)
-      if (url.pathname.startsWith('/receive/')) {
+      if (url.pathname.startsWith('/receive/') || url.pathname === '/store') {
         return caches.match('/').then((cached) =>
           cached || new Response(OFFLINE_HTML, {
             headers: { 'Content-Type': 'text/html' },

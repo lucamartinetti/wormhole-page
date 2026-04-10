@@ -340,6 +340,29 @@ h1 {
   color: white;
 }
 
+/* === Store / Passphrase === */
+.passphrase-display {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+  word-spacing: 8px;
+  letter-spacing: 0.5px;
+  padding: 16px 12px;
+  background: var(--bg-surface);
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  user-select: all;
+}
+.store-expiry-notice {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin: 8px 0;
+}
+
 /* === QR === */
 .qr-container { text-align: center; margin-bottom: 14px; }
 .qr-container canvas, .qr-container img { margin: 0 auto; }
