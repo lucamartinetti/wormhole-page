@@ -59,6 +59,18 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
         Send a folder
       </button>
+      <button class="btn-folder" id="btn-text" aria-label="Send a text message">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+        Send text
+      </button>
+      <div id="send-text-panel" class="hidden">
+        <textarea id="send-text-input" placeholder="Type or paste text to send&hellip;" aria-label="Text message to send" maxlength="262144" spellcheck="false"></textarea>
+        <div class="send-text-actions">
+          <button class="btn-action" id="send-text-cancel">Cancel</button>
+          <button class="btn" id="send-text-submit" disabled>Send text</button>
+        </div>
+        <p class="settings-error hidden" id="send-text-hint" role="alert"></p>
+      </div>
     </div>
 
     <!-- Send: status state -->
@@ -118,6 +130,19 @@
           <div>
             <div class="file-name" id="receive-filename"></div>
             <div class="file-size" id="receive-filesize"></div>
+          </div>
+        </div>
+        <div id="receive-text-panel" class="hidden">
+          <pre id="receive-text-content" role="region" aria-label="Received text" tabindex="0"></pre>
+          <div class="code-actions">
+            <button class="btn-action" id="btn-copy-text" aria-label="Copy received text to clipboard">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              <span id="copy-text-label">Copy</span>
+            </button>
+            <button class="btn-action" id="btn-download-text" aria-label="Download received text as a file">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span>Download</span>
+            </button>
           </div>
         </div>
         <div id="receive-progress-section" class="hidden">

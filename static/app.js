@@ -2,6 +2,8 @@
 let currentCode = null;
 let qrModeWeb = true; // true = web URL, false = wormhole-transfer:
 let transferActive = false;
+let lastReceivedText = null;
+let lastReceivedFilename = 'message.txt';
 
 // --- Analytics helpers ---
 function track(event, data) {
@@ -289,8 +291,11 @@ function startReceiveWasm(code) {
   hide('receive-initial');
   show('receive-status');
   hide('receive-file-info');
+  hide('receive-text-panel');
   hide('receive-progress-section');
   hide('receive-transfer-info');
+  lastReceivedText = null;
+  lastReceivedFilename = 'message.txt';
   document.getElementById('receive-spinner').style.display = '';
   document.getElementById('receive-status-text').textContent = 'establishing encrypted connection...';
   document.getElementById('receive-status-text').className = 'status-text';
@@ -303,6 +308,7 @@ function startReceiveWasm(code) {
 
   window.wasmClient.receive(code, {
     onFileInfo(filename, filesize) {
+      lastReceivedFilename = filename;
       document.getElementById('receive-filename').textContent = filename;
       var sizeText = formatSize(filesize);
       if (filename.endsWith('.zip')) {
@@ -311,6 +317,13 @@ function startReceiveWasm(code) {
       document.getElementById('receive-filesize').textContent = sizeText;
       show('receive-file-info');
       document.getElementById('receive-spinner').style.display = 'none';
+    },
+    onText(text) {
+      lastReceivedText = text;
+      const pre = document.getElementById('receive-text-content');
+      pre.textContent = text;
+      document.getElementById('receive-filename').textContent = lastReceivedFilename + ' (text)';
+      show('receive-text-panel');
     },
     onStatus(text) {
       document.getElementById('receive-status-text').textContent = text;
@@ -361,6 +374,7 @@ function startReceiveWasm(code) {
 function cancelReceive() {
   if (window.wasmClient) window.wasmClient.cancelReceive();
   transferActive = false;
+  hide('receive-text-panel');
   // If on a /receive/<code> URL, redirect to clean root
   if (window.location.pathname.match(/^\/receive\/.+$/)) {
     window.history.replaceState(null, '', '/');
@@ -492,3 +506,82 @@ document.getElementById('send-cancel-btn').addEventListener('click', cancelSend)
 document.getElementById('receive-code').addEventListener('keydown', function(e) { if (e.key === 'Enter') startReceive(); });
 document.getElementById('receive-btn').addEventListener('click', startReceive);
 document.getElementById('receive-cancel-btn').addEventListener('click', cancelReceive);
+// --- Send text messages ---
+const MAX_TEXT_BYTES = 512 * 1024; // keep in sync with wasm-client.js MAX_INLINE_TEXT_SIZE
+const sendTextPanel = document.getElementById('send-text-panel');
+const sendTextInput = document.getElementById('send-text-input');
+const sendTextSubmit = document.getElementById('send-text-submit');
+const sendTextHint = document.getElementById('send-text-hint');
+
+function setSendTextHint(msg) {
+  if (!sendTextHint) return;
+  sendTextHint.textContent = msg || '';
+  sendTextHint.classList.toggle('hidden', !msg);
+}
+
+function updateSendTextSubmit() {
+  if (sendTextSubmit) sendTextSubmit.disabled = sendTextInput.value.trim().length === 0;
+  setSendTextHint('');
+}
+
+function toggleSendText(show) {
+  sendTextPanel.classList.toggle('hidden', !show);
+  document.getElementById('btn-text').classList.toggle('hidden', show);
+  if (show) sendTextInput.focus();
+  else {
+    setSendTextHint('');
+  }
+}
+
+if (sendTextPanel && document.getElementById('btn-text')) {
+  document.getElementById('btn-text').addEventListener('click', function() { toggleSendText(true); });
+  document.getElementById('send-text-cancel').addEventListener('click', function() {
+    sendTextInput.value = '';
+    updateSendTextSubmit();
+    toggleSendText(false);
+  });
+  sendTextInput.addEventListener('input', updateSendTextSubmit);
+  sendTextInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !sendTextSubmit.disabled) {
+      sendTextSubmit.click();
+    }
+  });
+  sendTextSubmit.addEventListener('click', function() {
+    const text = sendTextInput.value;
+    if (!text.trim()) return;
+    if (new Blob([text]).size > MAX_TEXT_BYTES) {
+      setSendTextHint('Text is too large (max 512 KB). Send a file instead.');
+      return;
+    }
+    sendTextInput.value = '';
+    updateSendTextSubmit();
+    toggleSendText(false);
+    track('send-text', { size: sizeBucket(new Blob([text]).size) });
+    startSend(new File([text], 'message.txt', { type: 'text/plain' }));
+  });
+}
+
+// --- Receive text messages ---
+if (document.getElementById('btn-copy-text')) {
+  document.getElementById('btn-copy-text').addEventListener('click', function() {
+    if (lastReceivedText === null) return;
+    navigator.clipboard.writeText(lastReceivedText).then(function() {
+      var label = document.getElementById('copy-text-label');
+      label.textContent = 'Copied!';
+      setTimeout(function() { label.textContent = 'Copy'; }, 1000);
+    });
+  });
+  document.getElementById('btn-download-text').addEventListener('click', function() {
+    if (lastReceivedText === null) return;
+    var url = URL.createObjectURL(new Blob([lastReceivedText], { type: 'text/plain' }));
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = lastReceivedFilename || 'message.txt';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function() {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 60000);
+  });
+}
