@@ -14,6 +14,17 @@ self-hosted relays or failover if public relays go down.
 - Effort: S
 - Depends on: WASM E2E encryption
 
+## P3: Native text-offer interop (`wormhole/text-or-file-xfer`)
+The browser currently sends "text" as an in-memory `message.txt` file, which every
+receiver understands, but it is NOT the `--text` message offer used by Python's
+`wormhole send --text`. To interoperate natively, the forked crate
+(lucamartinetti/magic-wormhole.rs, branch wasm-time-fix) needs a `send_message`
+(PeerMessage::Offer(Message(..)) + MessageAck) path and request() must accept Message
+offers; then the WASM crate and wasm-client.js expose/receive text. WASM rebuild
+required — that is why this wasn't done in the browser.
+- Effort: M
+- Depends on: Rust toolchain with wasm-pack
+
 ## P3: beforeunload warning during active transfer
 Show browser's "Leave site?" dialog when transfer is in progress and user
 tries to close tab or navigate away. Prevents accidental transfer abort.
