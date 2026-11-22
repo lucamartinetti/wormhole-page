@@ -1,5 +1,8 @@
+# Both stages must use the same Debian release: the server binary links
+# against the build stage's glibc and fails to start on an older one.
+
 # --- Build stage: Rust server + WASM ---
-FROM rust:1.94-slim AS builder
+FROM rust:1.94-slim-trixie AS builder
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 RUN cargo install wasm-pack
@@ -15,7 +18,7 @@ RUN cargo build --release -p wormhole-page-server
 RUN cd crates/wormhole-wasm && wasm-pack build --target web --release
 
 # --- Runtime stage ---
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
