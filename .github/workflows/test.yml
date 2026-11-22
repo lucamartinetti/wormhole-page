@@ -10,7 +10,8 @@ env:
 jobs:
   playwright:
     name: Playwright e2e
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: Playwright 1.58 cannot install Chromium on Ubuntu 26.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
