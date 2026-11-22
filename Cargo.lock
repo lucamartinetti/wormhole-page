@@ -1539,7 +1539,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 [[package]]
 name = "magic-wormhole"
 version = "0.9.0-alpha.1"
-source = "git+https://github.com/dougsko/magic-wormhole.rs?branch=web-text-receive#6c15fc6c9bc88895d919d07b35eee4d4657205d9"
+source = "git+https://github.com/lucamartinetti/magic-wormhole.rs?branch=web-text-receive#6c15fc6c9bc88895d919d07b35eee4d4657205d9"
 dependencies = [
  "async-executor",
  "async-fs",

@@ -478,22 +478,16 @@ async function wasmSend(fileOrFiles, callbacks) {
 }
 
 // --- WASM Receive ---
-// Files that are likely text and small enough to display inline instead of
-// downloading: power users receiving `message.txt`-style offers from the
-// "Send text" button, or small text files sent by other wormhole CLIs.
+// Text messages are displayed inline instead of being downloaded. A text
+// message always arrives as a small offer named `message.txt`: that is how the
+// "Send text" button sends it, and how the WASM client presents a text message
+// sent by a CLI (`wormhole send --text`). Every other offer, including other
+// small text files, takes the normal download path.
+const TEXT_MESSAGE_FILENAME = 'message.txt';
 const MAX_INLINE_TEXT_SIZE = 512 * 1024; // 512KB
 
-function looksLikeTextFile(filename) {
-  // No extension (e.g. plain README) or a known text-ish extension
-  const m = /\.([a-z0-9]+)$/i.exec(filename.toLowerCase());
-  if (!m) return true;
-  const textExts = new Set([
-    'txt', 'text', 'md', 'markdown', 'rst', 'log', 'json', 'jsonl', 'csv', 'tsv',
-    'yaml', 'yml', 'toml', 'xml', 'html', 'htm', 'css', 'js', 'mjs', 'ts', 'tsx',
-    'ini', 'cfg', 'conf', 'env', 'sh', 'bash', 'zsh', 'py', 'rs', 'go', 'c', 'h',
-    'cpp', 'hpp', 'java', 'rb', 'pl', 'lua', 'vim', 'diff', 'patch', 'svg', 'eml',
-  ]);
-  return textExts.has(m[1]);
+function isTextMessageOffer(filename, filesize) {
+  return filename === TEXT_MESSAGE_FILENAME && filesize <= MAX_INLINE_TEXT_SIZE;
 }
 
 // Trigger a browser download from a list of chunks (Uint8Array[]). Used as a
@@ -528,9 +522,9 @@ async function wasmReceive(code, callbacks) {
 
     const filename = sanitizeFilename(offer.filename);
     const filesize = Number(offer.filesize);
-    // Small text-looking offers are received to memory and shown inline,
-    // instead of hitting the save-file picker / triggering a download.
-    const inlineText = filesize <= MAX_INLINE_TEXT_SIZE && looksLikeTextFile(filename);
+    // Text messages are received to memory and shown inline, instead of
+    // hitting the save-file picker / triggering a download.
+    const inlineText = isTextMessageOffer(filename, filesize);
     onFileInfo(filename, filesize);
 
     await receiver.accept();
@@ -606,10 +600,17 @@ async function wasmReceive(code, callbacks) {
         all.set(c, offset);
         offset += c.length;
       }
+      let text = null;
       try {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(all);
-        onText(text);
+        text = new TextDecoder('utf-8', { fatal: true }).decode(all);
       } catch (_) {
+        // Not valid UTF-8: treat it as an ordinary file
+      }
+      if (text !== null) {
+        // Pass the raw bytes too, so a later download is byte-identical
+        // (decoding drops a leading UTF-8 BOM).
+        onText(text, all);
+      } else {
         downloadBlobFromChunks(chunks, filename);
       }
     } else {

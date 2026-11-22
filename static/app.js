@@ -3,6 +3,7 @@ let currentCode = null;
 let qrModeWeb = true; // true = web URL, false = wormhole-transfer:
 let transferActive = false;
 let lastReceivedText = null;
+let lastReceivedBytes = null; // the text exactly as received (Uint8Array), for Download
 let lastReceivedFilename = 'message.txt';
 
 // --- Analytics helpers ---
@@ -295,6 +296,7 @@ function startReceiveWasm(code) {
   hide('receive-progress-section');
   hide('receive-transfer-info');
   lastReceivedText = null;
+  lastReceivedBytes = null;
   lastReceivedFilename = 'message.txt';
   document.getElementById('receive-spinner').style.display = '';
   document.getElementById('receive-status-text').textContent = 'establishing encrypted connection...';
@@ -318,8 +320,9 @@ function startReceiveWasm(code) {
       show('receive-file-info');
       document.getElementById('receive-spinner').style.display = 'none';
     },
-    onText(text) {
+    onText(text, bytes) {
       lastReceivedText = text;
+      lastReceivedBytes = bytes;
       const pre = document.getElementById('receive-text-content');
       pre.textContent = text;
       document.getElementById('receive-filename').textContent = lastReceivedFilename + ' (text)';
@@ -572,8 +575,9 @@ if (document.getElementById('btn-copy-text')) {
     });
   });
   document.getElementById('btn-download-text').addEventListener('click', function() {
-    if (lastReceivedText === null) return;
-    var url = URL.createObjectURL(new Blob([lastReceivedText], { type: 'text/plain' }));
+    if (lastReceivedBytes === null) return;
+    // Use the bytes as received: re-encoding the decoded text would drop a leading BOM
+    var url = URL.createObjectURL(new Blob([lastReceivedBytes], { type: 'text/plain' }));
     var a = document.createElement('a');
     a.href = url;
     a.download = lastReceivedFilename || 'message.txt';

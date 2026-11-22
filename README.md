@@ -47,9 +47,9 @@ download. CLI peers receive it as a regular `message.txt` file:
 wormhole-rs receive <code>   # writes message.txt
 ```
 
-Any small text file received in the browser (`.txt`, `.md`, `.json`, `.csv`, etc., up to
-512 KB and decodable as UTF-8) is displayed inline as well — not only messages from this
-button. Larger or non-UTF-8 offers fall back to the normal file download path.
+Text sent from a CLI (`wormhole send --text "..."`) is displayed inline in the same way.
+Inline display applies to offers named `message.txt` of up to 512 KB that decode as UTF-8;
+every other file, including other small text files, is downloaded as usual.
 
 ## Self-hosting
 
