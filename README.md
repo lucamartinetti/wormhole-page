@@ -37,6 +37,20 @@ The server **cannot** decrypt your files. It sees only encrypted transit traffic
 
 Open [wormhole.page](https://wormhole.page) in two tabs (or two devices). Send in one, receive in the other.
 
+### Send text
+
+Click **Send text** (next to *Send a folder*), type or paste a message, and hit **Send text**.
+The receiver sees the message inline (with Copy / Download buttons) instead of a file
+download. CLI peers receive it as a regular `message.txt` file:
+
+```bash
+wormhole-rs receive <code>   # writes message.txt
+```
+
+Text sent from a CLI (`wormhole send --text "..."`) is displayed inline in the same way.
+Inline display applies to offers named `message.txt` of up to 512 KB that decode as UTF-8;
+every other file, including other small text files, is downloaded as usual.
+
 ## Self-hosting
 
 wormhole.page is a single binary (~5 MB) with zero external dependencies.

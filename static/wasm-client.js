@@ -478,8 +478,38 @@ async function wasmSend(fileOrFiles, callbacks) {
 }
 
 // --- WASM Receive ---
+// Text messages are displayed inline instead of being downloaded. A text
+// message always arrives as a small offer named `message.txt`: that is how the
+// "Send text" button sends it, and how the WASM client presents a text message
+// sent by a CLI (`wormhole send --text`). Every other offer, including other
+// small text files, takes the normal download path.
+const TEXT_MESSAGE_FILENAME = 'message.txt';
+const MAX_INLINE_TEXT_SIZE = 512 * 1024; // 512KB
+
+function isTextMessageOffer(filename, filesize) {
+  return filename === TEXT_MESSAGE_FILENAME && filesize <= MAX_INLINE_TEXT_SIZE;
+}
+
+// Trigger a browser download from a list of chunks (Uint8Array[]). Used as a
+// fallback when the text decode fails and for the regular file path.
+function downloadBlobFromChunks(chunks, filename) {
+  const blob = new Blob(chunks);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  // Delay cleanup — browsers may not start the download synchronously,
+  // so removing the element or revoking the URL too early drops small files.
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 60000);
+}
+
 async function wasmReceive(code, callbacks) {
-  const { onFileInfo, onProgress, onStatus, onError, onComplete } = callbacks;
+  const { onFileInfo, onProgress, onStatus, onError, onComplete, onText } = callbacks;
 
   let receiver = null;
   try {
@@ -492,6 +522,9 @@ async function wasmReceive(code, callbacks) {
 
     const filename = sanitizeFilename(offer.filename);
     const filesize = Number(offer.filesize);
+    // Text messages are received to memory and shown inline, instead of
+    // hitting the save-file picker / triggering a download.
+    const inlineText = isTextMessageOffer(filename, filesize);
     onFileInfo(filename, filesize);
 
     await receiver.accept();
@@ -506,7 +539,7 @@ async function wasmReceive(code, callbacks) {
     let chunks = null;
     const MAX_BLOB_SIZE = 512 * 1024 * 1024; // 512MB in-memory limit
 
-    if ('showSaveFilePicker' in window) {
+    if (!inlineText && 'showSaveFilePicker' in window) {
       try {
         const handle = await window.showSaveFilePicker({ suggestedName: filename });
         writer = await handle.createWritable();
@@ -559,21 +592,30 @@ async function wasmReceive(code, callbacks) {
 
     if (writer) {
       await writer.close();
+    } else if (inlineText && onText) {
+      // Decode the received bytes as UTF-8 text; on failure fall back to a file download
+      const all = new Uint8Array(received);
+      let offset = 0;
+      for (const c of chunks) {
+        all.set(c, offset);
+        offset += c.length;
+      }
+      let text = null;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(all);
+      } catch (_) {
+        // Not valid UTF-8: treat it as an ordinary file
+      }
+      if (text !== null) {
+        // Pass the raw bytes too, so a later download is byte-identical
+        // (decoding drops a leading UTF-8 BOM).
+        onText(text, all);
+      } else {
+        downloadBlobFromChunks(chunks, filename);
+      }
     } else {
       // Trigger browser download from Blob
-      const blob = new Blob(chunks);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      // Delay cleanup — browsers may not start the download synchronously,
-      // so removing the element or revoking the URL too early drops small files.
-      setTimeout(() => {
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }, 60000);
+      downloadBlobFromChunks(chunks, filename);
     }
 
     onComplete();
